@@ -364,6 +364,10 @@ void emulator::hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* u
     if (!decode_insn(&insn, address))
         return;
 
+#ifndef NDEBUG
+    print_disasm(address);
+#endif
+
     ++counters::instructions_executed;
 
     if (should_update_dialog)
