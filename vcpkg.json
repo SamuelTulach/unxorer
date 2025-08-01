@@ -1,0 +1,9 @@
+{
+  "name": "unxorer",
+  "builtin-baseline": "f2bf7d935af722c0cd8219c1f6e30d5ae3d666f2",
+  "dependencies": [
+    "fmt",
+    "pkgconf",
+    "unicorn"
+  ]
+}
