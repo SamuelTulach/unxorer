@@ -86,5 +86,6 @@ namespace emulator
     bool hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);
 
     void reset();
+    uc_err safe_start(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count);
     void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch);
 }

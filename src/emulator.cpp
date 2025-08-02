@@ -448,6 +448,19 @@ void emulator::reset()
     should_update_dialog = true;
 }
 
+uc_err emulator::safe_start(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count)
+{
+    __try
+    {
+        return uc_emu_start(uc, begin, until, timeout, count);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        logger::print("exception thrown during emulation: {0:x}", GetExceptionCode());
+        return UC_ERR_EXCEPTION;
+    }
+}
+
 void emulator::run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch)
 {
     logger::print("starting emulation from {0:x}...", start);
@@ -519,11 +532,9 @@ void emulator::run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch)
     {
         uc_reg_write(engine, UC_X86_REG_RIP, &entry);
 
-        err = uc_emu_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
+        err = safe_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
         if (err != UC_ERR_OK)
-        {
             logger::print("emulation failure: {0}", uc_strerror(err));
-        }
 
         if (pending.empty())
             break;

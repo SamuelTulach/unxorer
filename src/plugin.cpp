@@ -43,8 +43,8 @@ static bool idaapi run(size_t)
                                "<Max time (ms):\t      D:20:10::>\n"
                                "<Max instructions:\t   D:20:10::>\n";
 
-    uval_t max_time = 5000;
-    uval_t max_instr_count = 300;
+    uval_t max_time = 10000;
+    uval_t max_instr_count = 3000;
     int scope = S_FUNC;
     if (!ask_form(form, &scope, &max_time, &max_instr_count))
         return false;
