@@ -77,6 +77,7 @@ namespace emulator
     bool is_conditional(const insn_t& insn);
     bool should_dump(const insn_t& insn);
     bool should_skip(const insn_t& insn);
+    bool should_handle(const insn_t& insn);
 
     void force_branch(uc_engine* uc, const insn_t& insn);
     bool is_external_thunk(ea_t ea);

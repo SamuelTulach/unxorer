@@ -37,7 +37,7 @@ find_package(fmt CONFIG REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(UNICORN REQUIRED IMPORTED_TARGET unicorn)
 
-add_library(unxorer SHARED "src/plugin.cpp" "src/emulator.cpp" "src/console.cpp" "src/results.cpp")
+add_library(unxorer SHARED "src/plugin.cpp" "src/emulator.cpp" "src/console.cpp" "src/results.cpp" "src/handler.cpp")
 target_link_libraries(unxorer PRIVATE fmt::fmt PkgConfig::UNICORN)
 
 target_include_directories(unxorer PRIVATE "${IDASDK_ROOT}/include")

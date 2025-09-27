@@ -169,6 +169,12 @@ bool emulator::should_skip(const insn_t& insn)
     return skip.contains(insn.itype);
 }
 
+bool emulator::should_handle(const insn_t& insn)
+{
+    static const std::unordered_set<int> handle = {NN_vmovdqu, NN_vmovdqa, NN_vpxor, NN_vzeroupper};
+    return handle.contains(insn.itype);
+}
+
 void emulator::force_branch(uc_engine* uc, const insn_t& insn)
 {
     constexpr uint64_t f_cf = 0x00000001ull;
@@ -375,17 +381,20 @@ void emulator::hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* u
 
     if (should_skip(insn))
     {
-        uint64_t rip = 0;
-        uc_reg_read(uc, UC_X86_REG_RIP, &rip);
-        rip += size;
+        const uint64_t rip = address + size;
         uc_reg_write(uc, UC_X86_REG_RIP, &rip);
-
         ++counters::skipped;
         return;
     }
 
     if (should_dump(insn))
         dump_stack_strings();
+
+    if (should_handle(insn))
+    {
+        handler::handle(uc, address, insn.size, insn);
+        return;
+    }
 
     if (handle_call(uc, address, size, insn))
         return;

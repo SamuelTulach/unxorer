@@ -22,3 +22,4 @@
 #include "emulator.hpp"
 #include "strings.hpp"
 #include "results.hpp"
+#include "handler.hpp"

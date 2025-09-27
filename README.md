@@ -8,7 +8,7 @@ You can specify one or more starting addresses (e.g. entry point, cursor locatio
 
 ## Installation
 1. Download the latest release from the [releases page](https://github.com/SamuelTulach/unxorer/releases) or compile it yourself (see **Compiling** below).  
-2. Copy the plugin file into your IDA “plugins” directory:
+2. Copy the plugin file into your IDA "plugins" directory:
    - **Windows:** `C:\Program Files\IDA <version>\plugins`
    - **Linux/macOS:** `~/ida/plugins`
 3. Restart IDA if it is running.
