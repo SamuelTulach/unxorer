@@ -47,11 +47,21 @@ target_compile_definitions(unxorer PRIVATE __IDP__ __PLUGIN__ __EA64__
 )
 
 if(WIN32)
-    set(IDA_LIB_DIR "${IDASDK_ROOT}/lib/x64_win_vc_64_home")
+    if(EXISTS "${IDASDK_ROOT}/lib/x64_win_vc_64")
+        set(IDA_LIB_DIR "${IDASDK_ROOT}/lib/x64_win_vc_64")
+    else()
+        set(IDA_LIB_DIR "${IDASDK_ROOT}/lib/x64_win_vc_64_home")
+    endif()
+    
     target_link_libraries(unxorer PRIVATE "${IDA_LIB_DIR}/ida.lib")
     set_target_properties(unxorer PROPERTIES SUFFIX ".dll")
 else()
-    set(IDA_LIB_DIR "${IDASDK_ROOT}/lib/x64_linux_gcc_64_home")
+    if(EXISTS "${IDASDK_ROOT}/lib/x64_linux_gcc_64")
+        set(IDA_LIB_DIR "${IDASDK_ROOT}/lib/x64_linux_gcc_64")
+    else()
+        set(IDA_LIB_DIR "${IDASDK_ROOT}/lib/x64_linux_gcc_64_home")
+    endif()
+
     find_library(IDAAPI idaapi PATHS "${IDA_LIB_DIR}" NO_DEFAULT_PATH)
     target_link_libraries(unxorer PRIVATE "${IDAAPI}")
     set_target_properties(unxorer PROPERTIES SUFFIX ".so")
