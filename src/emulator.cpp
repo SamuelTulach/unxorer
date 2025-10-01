@@ -276,7 +276,7 @@ void emulator::force_branch(uc_engine* uc, const insn_t& insn)
     uc_reg_write(uc, UC_X86_REG_EFLAGS, &eflags);
 }
 
-bool emulator::is_external_thunk(ea_t ea)
+bool emulator::is_external_thunk(const ea_t ea)
 {
     insn_t jmp;
     if (!decode_insn(&jmp, ea))
@@ -286,8 +286,8 @@ bool emulator::is_external_thunk(ea_t ea)
     if (std::find(std::begin(jmp_types), std::end(jmp_types), jmp.itype) == std::end(jmp_types))
         return false;
 
-    ea_t img_min = inf_get_min_ea();
-    ea_t img_max = inf_get_max_ea();
+    const ea_t img_min = inf_get_min_ea();
+    const ea_t img_max = inf_get_max_ea();
 
     uint64_t final = 0;
     bool have_final = false;
@@ -313,7 +313,7 @@ bool emulator::is_external_thunk(ea_t ea)
     return have_final && (final < img_min || final >= img_max);
 }
 
-bool emulator::handle_call(uc_engine* uc, uint64_t address, uint32_t size, insn_t insn)
+bool emulator::handle_call(uc_engine* uc, const uint64_t address, const uint32_t size, insn_t insn)
 {
     if (insn.itype != NN_call && insn.itype != NN_callfi && insn.itype != NN_callni)
         return false;
@@ -364,22 +364,25 @@ bool emulator::handle_call(uc_engine* uc, uint64_t address, uint32_t size, insn_
     return true;
 }
 
-void emulator::hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* user_data)
+void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t size, void* user_data)
 {
+    emulator* current = reinterpret_cast<emulator*>(user_data);
+
     insn_t insn;
     if (!decode_insn(&insn, address))
         return;
 
 #ifndef NDEBUG
-    print_disasm(address);
+    current->print_disasm(address);
 #endif
 
     ++counters::instructions_executed;
 
-    if (should_update_dialog)
-        replace_wait_box("Emulating at 0x%a, executed %zu instructions", address, counters::instructions_executed);
+    if (current->should_update_dialog)
+        replace_wait_box("Emulating at 0x%a, executed %zu instructions", address,
+                         counters::instructions_executed.load());
 
-    if (should_skip(insn))
+    if (current->should_skip(insn))
     {
         const uint64_t rip = address + size;
         uc_reg_write(uc, UC_X86_REG_RIP, &rip);
@@ -387,31 +390,31 @@ void emulator::hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* u
         return;
     }
 
-    if (should_dump(insn))
-        dump_stack_strings();
+    if (current->should_dump(insn))
+        current->dump_stack_strings();
 
-    if (should_handle(insn))
+    if (current->should_handle(insn))
     {
         handler::handle(uc, address, insn.size, insn);
         return;
     }
 
-    if (handle_call(uc, address, size, insn))
+    if (current->handle_call(uc, address, size, insn))
         return;
 
-    if (!is_conditional(insn))
+    if (!current->is_conditional(insn))
         return;
 
     const uint64_t taken = insn.Op1.addr;
     const uint64_t fallthrough = address + size;
 
-    if (!visited.contains(fallthrough))
+    if (!current->visited.contains(fallthrough))
     {
         branch_state_t st;
         uc_context_alloc(uc, &st.ctx);
         uc_context_save(uc, st.ctx);
         st.pc = fallthrough;
-        pending.push_back(std::move(st));
+        current->pending.push_back(std::move(st));
         ++counters::branched;
     }
     else
@@ -419,13 +422,14 @@ void emulator::hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* u
         ++counters::already_visited;
     }
 
-    visited.insert(fallthrough);
+    current->visited.insert(fallthrough);
 
     if (taken > address)
-        force_branch(engine, insn);
+        current->force_branch(uc, insn);
 }
 
-bool emulator::hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data)
+bool emulator::hook_mem(uc_engine* uc, uc_mem_type type, const uint64_t address, int size, int64_t value,
+                        void* user_data)
 {
     constexpr uint64_t page_mask = ~0xFFFULL;
     const uint64_t page = address & page_mask;
@@ -446,7 +450,7 @@ void emulator::reset()
     visited.clear();
     string_list.clear();
 
-    counters::start_time.reset();
+    counters::start_time.store(std::nullopt);
     counters::instructions_executed = 0;
     counters::branched = 0;
     counters::already_visited = 0;
@@ -457,25 +461,10 @@ void emulator::reset()
     should_update_dialog = true;
 }
 
-uc_err emulator::safe_start(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count)
+emulator::emulator()
 {
-    __try
-    {
-        return uc_emu_start(uc, begin, until, timeout, count);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        logger::print("exception thrown during emulation: {0:x}", GetExceptionCode());
-        return UC_ERR_EXCEPTION;
-    }
-}
-
-void emulator::run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch)
-{
-    logger::print("starting emulation from {0:x}...", start);
-
-    if (!counters::start_time.has_value())
-        counters::start_time = std::chrono::high_resolution_clock::now();
+    logger::print("initializing...");
+    reset();
 
     uc_err err = uc_open(UC_ARCH_X86, UC_MODE_64, &engine);
     if (err != UC_ERR_OK)
@@ -530,10 +519,44 @@ void emulator::run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch)
         return;
     }
 
-    uc_reg_write(engine, UC_X86_REG_RSP, &stack_base);
+    uc_hook_add(engine, &code_hook, UC_HOOK_CODE, hook_code, this, 1, 0);
+    uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem, this, 1, 0);
+}
 
-    uc_hook_add(engine, &code_hook, UC_HOOK_CODE, hook_code, nullptr, 1, 0);
-    uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem, nullptr, 1, 0);
+emulator::~emulator()
+{
+    uc_close(engine);
+}
+
+uc_err emulator::safe_start(uc_engine* uc, const uint64_t begin, const uint64_t until, const uint64_t timeout,
+                            const size_t count)
+{
+    __try
+    {
+        return uc_emu_start(uc, begin, until, timeout, count);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        logger::print("exception thrown during emulation: {0:x}", GetExceptionCode());
+        return UC_ERR_EXCEPTION;
+    }
+}
+
+std::unordered_set<emulator::found_string_t, emulator::found_string_hash>& emulator::get_string_list()
+{
+    return string_list;
+}
+
+void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr_branch)
+{
+    logger::print("starting emulation from {0:x}...", start);
+
+    if (!counters::start_time.load().has_value())
+        counters::start_time.store(std::chrono::high_resolution_clock::now());
+
+    overwrite_all_registers(0x2000);
+
+    uc_reg_write(engine, UC_X86_REG_RSP, &stack_base);
 
     uint64_t entry = start;
 
@@ -541,7 +564,7 @@ void emulator::run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch)
     {
         uc_reg_write(engine, UC_X86_REG_RIP, &entry);
 
-        err = safe_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
+        const uc_err err = safe_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
         if (err != UC_ERR_OK)
             logger::print("emulation failure: {0}", uc_strerror(err));
 
@@ -554,6 +577,4 @@ void emulator::run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch)
         uc_context_restore(engine, st.ctx);
         entry = st.pc;
     }
-
-    uc_close(engine);
 }

@@ -59,10 +59,10 @@ const char* const results_chooser_t::results_headers_[] = {"rip", "rsp", "string
 void results::display(const std::unordered_set<emulator::found_string_t, emulator::found_string_hash>& string_list)
 {
     const auto duration = std::chrono::high_resolution_clock::now() -
-                          emulator::counters::start_time.value_or(std::chrono::high_resolution_clock::now());
+                          counters::start_time.load().value_or(std::chrono::high_resolution_clock::now());
 
     logger::print("stats:");
-    logger::print(" - instructions:    {0}", emulator::counters::instructions_executed);
+    logger::print(" - instructions:    {0}", counters::instructions_executed.load());
     logger::print(" - time:            {0}", strings::format_duration(duration));
 
     logger::print("finished, found {0} unique strings", string_list.size());

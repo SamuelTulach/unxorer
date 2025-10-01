@@ -22,8 +22,6 @@ static bool idaapi run(size_t)
         return false;
     }
 
-    emulator::reset();
-
     enum scope
     {
         S_FUNC = 0,
@@ -50,6 +48,7 @@ static bool idaapi run(size_t)
         return false;
 
     show_wait_box("Initializing");
+    emulator emu;
 
     switch (scope)
     {
@@ -61,8 +60,8 @@ static bool idaapi run(size_t)
             break;
         }
 
-        emulator::run(func->start_ea, max_time, max_instr_count);
-        results::display(emulator::string_list);
+        emu.run(func->start_ea, max_time, max_instr_count);
+        results::display(emu.get_string_list());
         break;
     }
     case S_EVERY_FUNC: {
@@ -75,30 +74,30 @@ static bool idaapi run(size_t)
 
         logger::print("running on {0} functions in database", total);
 
-        emulator::should_update_dialog = false;
+        emu.should_update_dialog = false;
 
         for (size_t i = 0; i < total; i++)
         {
             const ea_t start = getn_func(i)->start_ea;
             replace_wait_box("Emulating function %zu/%zu at 0x%a", i + 1, total, start);
 
-            emulator::run(start, max_time, max_instr_count);
+            emu.run(start, max_time, max_instr_count);
 
             if (user_cancelled())
                 break;
         }
 
-        results::display(emulator::string_list);
+        results::display(emu.get_string_list());
         break;
     }
     case S_CUR: {
-        emulator::run(get_screen_ea(), max_time, max_instr_count);
-        results::display(emulator::string_list);
+        emu.run(get_screen_ea(), max_time, max_instr_count);
+        results::display(emu.get_string_list());
         break;
     }
     case S_ENTRY:
-        emulator::run(inf_get_start_ea(), max_time, max_instr_count);
-        results::display(emulator::string_list);
+        emu.run(inf_get_start_ea(), max_time, max_instr_count);
+        results::display(emu.get_string_list());
         break;
     }
 
