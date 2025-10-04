@@ -67,7 +67,7 @@ void handler::vzeroupper(uc_engine* uc, const uint64_t address, const uint32_t s
 void handler::handle(uc_engine* uc, const uint64_t address, const uint32_t size, const insn_t& insn)
 {
     vector_operations::update_rip(uc, address, size);
-    logger::info("custom handling at {0:x} with size {1:d}...", address, size);
+    logger::debug("custom handling at {0:x} with size {1:d}...", address, size);
 
     switch (insn.itype)
     {
