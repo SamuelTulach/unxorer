@@ -1,37 +1,31 @@
 #include "global.hpp"
 
-void emulator::overwrite_all_registers(const uint64_t value)
+void emulator::overwrite_all_registers(const uint64_t value) const
 {
-    if (uc_reg_write(engine, UC_X86_REG_RAX, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_RBX, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_RCX, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_RDX, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_RSI, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_RDI, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_RBP, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_RSP, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R8, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R9, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R10, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R11, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R12, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R13, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R14, &value) != UC_ERR_OK ||
-        uc_reg_write(engine, UC_X86_REG_R15, &value) != UC_ERR_OK)
+    constexpr int registers[] = {UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
+                                 UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RBP, UC_X86_REG_RSP,
+                                 UC_X86_REG_R8,  UC_X86_REG_R9,  UC_X86_REG_R10, UC_X86_REG_R11,
+                                 UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15};
+
+    for (const auto reg : registers)
     {
-        logger::print("failed to overwrite registers");
+        if (uc_reg_write(engine, reg, &value) != UC_ERR_OK)
+        {
+            logger::debug("failed to overwrite register");
+            break;
+        }
     }
 }
 
-void emulator::print_disasm(const ea_t& address)
+void emulator::print_disasm(const ea_t address) const
 {
     qstring line;
     generate_disasm_line(&line, address, GENDSM_REMOVE_TAGS);
     tag_remove(&line);
-    logger::print("{0:x}: {1}", address, line.c_str());
+    logger::debug("{0:x}: {1}", address, line.c_str());
 }
 
-void emulator::push_string(const uint64_t rip, const uint64_t rsp, const std::string& str)
+void emulator::push_string(const uint64_t rip, const uint64_t rsp, std::string str)
 {
     if (str.empty())
         return;
@@ -72,12 +66,7 @@ void emulator::push_string(const uint64_t rip, const uint64_t rsp, const std::st
     strings::left_trim(escaped);
     strings::right_trim(escaped);
 
-    found_string_t found_string;
-    found_string.rip = rip;
-    found_string.rsp = rsp;
-    found_string.data = std::move(escaped);
-
-    string_list.emplace(found_string);
+    string_list_.emplace(found_string_t{rip, rsp, std::move(escaped)});
 }
 
 void emulator::dump_stack_strings()
@@ -88,22 +77,19 @@ void emulator::dump_stack_strings()
     uint64_t rip = 0;
     uc_reg_read(engine, UC_X86_REG_RIP, &rip);
 
-    // logger::print("dumping stack strings with rsp {0:x}...", rsp);
-
     if (rsp < stack_base - stack_size || rsp >= stack_base)
     {
-        logger::print("rsp {0:x} is out of stack bounds ({1:x} - {2:x})", rsp, stack_base - stack_size, stack_base);
+        logger::debug("rsp {0:x} is out of stack bounds ({1:x} - {2:x})", rsp, stack_base - stack_size, stack_base);
         return;
     }
 
-    size_t scan_sz = stack_base - rsp;
-    const size_t max_scan = 0x20000;
-    scan_sz = min(scan_sz, max_scan);
+    constexpr size_t max_scan = 0x20000;
+    size_t scan_sz = std::min(stack_base - rsp, max_scan);
 
     std::vector<uint8_t> buf(scan_sz);
     if (uc_mem_read(engine, rsp, buf.data(), scan_sz) != UC_ERR_OK)
     {
-        logger::print("failed to read stack memory at {0:x} with size {1:x}", rsp, scan_sz);
+        logger::debug("failed to read stack memory at {0:x} with size {1:x}", rsp, scan_sz);
         return;
     }
 
@@ -118,7 +104,7 @@ void emulator::dump_stack_strings()
             if (j - i >= 4 && j < scan_sz && buf[j] == 0)
             {
                 std::string s(reinterpret_cast<char*>(&buf[i]), j - i);
-                push_string(rip, rsp - (i + 1), s);
+                push_string(rip, rsp - (i + 1), std::move(s));
             }
 
             i = j + 1;
@@ -134,7 +120,7 @@ void emulator::dump_stack_strings()
             if ((j - i) / 2 >= 4 && j + 1 < scan_sz && buf[j] == 0 && buf[j + 1] == 0)
             {
                 std::string s = strings::utf16le_to_ascii(&buf[i], (j - i) / 2);
-                push_string(rip, rsp - (i + 2), s);
+                push_string(rip, rsp - (i + 2), std::move(s));
             }
 
             i = j + 2;
@@ -145,37 +131,7 @@ void emulator::dump_stack_strings()
     }
 }
 
-bool emulator::is_conditional(const insn_t& insn)
-{
-    static const std::unordered_set<int> jcc = {
-        NN_ja,  NN_jae,  NN_jb,  NN_jbe,  NN_jc,  NN_je,  NN_jz,  NN_jg,   NN_jge,  NN_jl,    NN_jle,
-        NN_jna, NN_jnae, NN_jnb, NN_jnbe, NN_jnc, NN_jne, NN_jng, NN_jnge, NN_jnl,  NN_jnle,  NN_jno,
-        NN_jnp, NN_jns,  NN_jnz, NN_jo,   NN_jp,  NN_jpe, NN_jpo, NN_js,   NN_jcxz, NN_jecxz, NN_jrcxz};
-    return jcc.contains(insn.itype);
-}
-
-bool emulator::should_dump(const insn_t& insn)
-{
-    static const std::unordered_set<int> ignored = {NN_mov, NN_xor, NN_push, NN_pop};
-    return !ignored.contains(insn.itype);
-}
-
-bool emulator::should_skip(const insn_t& insn)
-{
-    static const std::unordered_set<int> skip = {
-        NN_int3,    NN_hlt,     NN_ud2,    NN_syscall, NN_sysret, NN_vmcall, NN_vmclear, NN_vmlaunch, NN_vmresume,
-        NN_vmptrld, NN_vmptrst, NN_vmread, NN_vmwrite, NN_vmxoff, NN_vmxon,  NN_clgi,    NN_invlpga,  NN_skinit,
-        NN_stgi,    NN_vmexit,  NN_vmload, NN_vmmcall, NN_vmrun,  NN_vmsave, NN_invept,  NN_invvpid};
-    return skip.contains(insn.itype);
-}
-
-bool emulator::should_handle(const insn_t& insn)
-{
-    static const std::unordered_set<int> handle = {NN_vmovdqu, NN_vmovdqa, NN_vpxor, NN_vzeroupper};
-    return handle.contains(insn.itype);
-}
-
-void emulator::force_branch(uc_engine* uc, const insn_t& insn)
+void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
 {
     constexpr uint64_t f_cf = 0x00000001ull;
     constexpr uint64_t f_pf = 0x00000004ull;
@@ -276,14 +232,16 @@ void emulator::force_branch(uc_engine* uc, const insn_t& insn)
     uc_reg_write(uc, UC_X86_REG_EFLAGS, &eflags);
 }
 
-bool emulator::is_external_thunk(const ea_t ea)
+bool emulator::is_external_thunk(const ea_t ea) const
 {
     insn_t jmp;
     if (!decode_insn(&jmp, ea))
         return false;
 
-    constexpr int jmp_types[] = {NN_jmp, NN_jmpfi, NN_jmpni};
-    if (std::find(std::begin(jmp_types), std::end(jmp_types), jmp.itype) == std::end(jmp_types))
+    constexpr std::array jmp_types = {NN_jmp, NN_jmpfi, NN_jmpni};
+    const bool is_jmp = std::any_of(jmp_types.begin(), jmp_types.end(),
+                                    [&jmp](const int type) { return std::cmp_equal(jmp.itype, type); });
+    if (!is_jmp)
         return false;
 
     const ea_t img_min = inf_get_min_ea();
@@ -313,7 +271,7 @@ bool emulator::is_external_thunk(const ea_t ea)
     return have_final && (final < img_min || final >= img_max);
 }
 
-bool emulator::handle_call(uc_engine* uc, const uint64_t address, const uint32_t size, insn_t insn)
+bool emulator::handle_call(uc_engine* uc, const uint64_t address, const uint32_t size, const insn_t& insn)
 {
     if (insn.itype != NN_call && insn.itype != NN_callfi && insn.itype != NN_callni)
         return false;
@@ -372,9 +330,7 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
     if (!decode_insn(&insn, address))
         return;
 
-#ifndef NDEBUG
     current->print_disasm(address);
-#endif
 
     ++counters::instructions_executed;
 
@@ -382,7 +338,7 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         replace_wait_box("Emulating at 0x%a, executed %zu instructions", address,
                          counters::instructions_executed.load());
 
-    if (current->should_skip(insn))
+    if (instruction_classifier::should_skip(insn.itype))
     {
         const uint64_t rip = address + size;
         uc_reg_write(uc, UC_X86_REG_RIP, &rip);
@@ -390,10 +346,10 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         return;
     }
 
-    if (current->should_dump(insn))
+    if (instruction_classifier::should_dump(insn.itype))
         current->dump_stack_strings();
 
-    if (current->should_handle(insn))
+    if (instruction_classifier::should_handle(insn.itype))
     {
         handler::handle(uc, address, insn.size, insn);
         return;
@@ -402,19 +358,15 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
     if (current->handle_call(uc, address, size, insn))
         return;
 
-    if (!current->is_conditional(insn))
+    if (!instruction_classifier::is_conditional(insn.itype))
         return;
 
     const uint64_t taken = insn.Op1.addr;
     const uint64_t fallthrough = address + size;
 
-    if (!current->visited.contains(fallthrough))
+    if (!current->branches_.is_visited(fallthrough))
     {
-        branch_state_t st;
-        uc_context_alloc(uc, &st.ctx);
-        uc_context_save(uc, st.ctx);
-        st.pc = fallthrough;
-        current->pending.push_back(std::move(st));
+        current->branches_.save_branch(uc, fallthrough);
         ++counters::branched;
     }
     else
@@ -422,7 +374,7 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         ++counters::already_visited;
     }
 
-    current->visited.insert(fallthrough);
+    current->branches_.mark_visited(fallthrough);
 
     if (taken > address)
         current->force_branch(uc, insn);
@@ -440,15 +392,14 @@ bool emulator::hook_mem(uc_engine* uc, uc_mem_type type, const uint64_t address,
     uint64_t rip = 0;
     uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 
-    logger::print("mapped missing page {0:x} for {1:x}, resuming...", page, rip);
+    logger::debug("mapped missing page {0:x} for {1:x}, resuming...", page, rip);
     return true;
 }
 
 void emulator::reset()
 {
-    pending.clear();
-    visited.clear();
-    string_list.clear();
+    branches_.clear();
+    string_list_.clear();
 
     counters::start_time.store(std::nullopt);
     counters::instructions_executed = 0;
@@ -463,13 +414,13 @@ void emulator::reset()
 
 emulator::emulator()
 {
-    logger::print("initializing...");
+    logger::debug("initializing...");
     reset();
 
     uc_err err = uc_open(UC_ARCH_X86, UC_MODE_64, &engine);
     if (err != UC_ERR_OK)
     {
-        logger::print("failed to initialize engine: {0}", uc_strerror(err));
+        logger::info("failed to initialize engine: {0}", uc_strerror(err));
         return;
     }
 
@@ -488,7 +439,7 @@ emulator::emulator()
     err = uc_mem_map(engine, map_start, map_size, UC_PROT_ALL);
     if (err != UC_ERR_OK)
     {
-        logger::print("failed to map memory range {0:x} to {1:x}: {2}", img_min, img_max, uc_strerror(err));
+        logger::info("failed to map memory range {0:x} to {1:x}: {2}", img_min, img_max, uc_strerror(err));
         uc_close(engine);
         return;
     }
@@ -498,7 +449,7 @@ emulator::emulator()
     const ssize_t got = get_bytes(buffer.data(), size, img_min, GMB_READALL);
     if (got <= 0)
     {
-        logger::print("failed to read memory from {0:x} to {1:x}: {2}", img_min, img_max, got);
+        logger::info("failed to read memory from {0:x} to {1:x}: {2}", img_min, img_max, got);
         uc_close(engine);
         return;
     }
@@ -506,7 +457,7 @@ emulator::emulator()
     err = uc_mem_write(engine, img_min, buffer.data(), size);
     if (err != UC_ERR_OK)
     {
-        logger::print("failed to write memory from {0:x} with size {1:x}: {2}", img_min, size, uc_strerror(err));
+        logger::info("failed to write memory from {0:x} with size {1:x}: {2}", img_min, size, uc_strerror(err));
         uc_close(engine);
         return;
     }
@@ -514,7 +465,7 @@ emulator::emulator()
     err = uc_mem_map(engine, stack_base - stack_size, stack_size, UC_PROT_READ | UC_PROT_WRITE);
     if (err != UC_ERR_OK)
     {
-        logger::print("failed to map stack: {0}", uc_strerror(err));
+        logger::info("failed to map stack: {0}", uc_strerror(err));
         uc_close(engine);
         return;
     }
@@ -529,7 +480,7 @@ emulator::~emulator()
 }
 
 uc_err emulator::safe_start(uc_engine* uc, const uint64_t begin, const uint64_t until, const uint64_t timeout,
-                            const size_t count)
+                            const size_t count) const
 {
     __try
     {
@@ -537,19 +488,19 @@ uc_err emulator::safe_start(uc_engine* uc, const uint64_t begin, const uint64_t 
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        logger::print("exception thrown during emulation: {0:x}", GetExceptionCode());
+        logger::info("exception thrown during emulation: {0:x}", GetExceptionCode());
         return UC_ERR_EXCEPTION;
     }
 }
 
-std::unordered_set<emulator::found_string_t, emulator::found_string_hash>& emulator::get_string_list()
+const std::unordered_set<found_string_t, found_string_hash>& emulator::get_string_list() const noexcept
 {
-    return string_list;
+    return string_list_;
 }
 
 void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr_branch)
 {
-    logger::print("starting emulation from {0:x}...", start);
+    logger::debug("starting emulation from {0:x}...", start);
 
     if (!counters::start_time.load().has_value())
         counters::start_time.store(std::chrono::high_resolution_clock::now());
@@ -566,15 +517,13 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
 
         const uc_err err = safe_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
         if (err != UC_ERR_OK)
-            logger::print("emulation failure: {0}", uc_strerror(err));
+            logger::debug("emulation failure: {0}", uc_strerror(err));
 
-        if (pending.empty())
+        if (!branches_.has_pending())
             break;
 
-        const branch_state_t st = std::move(pending.back());
-        pending.pop_back();
-
-        uc_context_restore(engine, st.ctx);
-        entry = st.pc;
+        const auto state = branches_.take_next();
+        uc_context_restore(engine, state.ctx);
+        entry = state.pc;
     }
 }

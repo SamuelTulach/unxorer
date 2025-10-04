@@ -5,6 +5,7 @@ constexpr size_t stack_size = 0x100000;
 
 namespace counters
 {
+    // atomic for future multi-threading support
     inline std::atomic<size_t> instructions_executed = 0;
     inline std::atomic<size_t> branched = 0;
     inline std::atomic<size_t> already_visited = 0;
@@ -16,83 +17,32 @@ namespace counters
 
 class emulator
 {
-  public:
-    struct found_string_t
-    {
-        uint64_t rip = 0;
-        uint64_t rsp = 0;
-        std::string data = {};
-
-        bool operator==(const found_string_t& other) const noexcept
-        {
-            return data == other.data;
-        }
-    };
-
-    struct found_string_hash
-    {
-        size_t operator()(const found_string_t& input) const noexcept
-        {
-            return std::hash<std::string>{}(input.data);
-        }
-    };
-
   private:
     uc_engine* engine = nullptr;
     uc_hook code_hook = 0;
     uc_hook mem_hook = 0;
-    uc_hook fetch_hook = 0;
 
-    struct branch_state_t
-    {
-        uc_context* ctx = nullptr;
-        uint64_t pc = 0;
+    branch_manager branches_;
+    std::unordered_set<found_string_t, found_string_hash> string_list_;
 
-        branch_state_t() = default;
-        branch_state_t(const branch_state_t&) = delete;
-        branch_state_t& operator=(const branch_state_t&) = delete;
-
-        branch_state_t(branch_state_t&& o) noexcept : ctx(o.ctx), pc(o.pc)
-        {
-            o.ctx = nullptr;
-        }
-
-        ~branch_state_t()
-        {
-            if (ctx)
-                uc_context_free(ctx);
-        }
-    };
-
-    std::vector<branch_state_t> pending;
-    std::unordered_set<uint64_t> visited;
-
-    void overwrite_all_registers(uint64_t value);
-
-    std::unordered_set<found_string_t, found_string_hash> string_list;
-    void print_disasm(const ea_t& address);
-    void push_string(const uint64_t rip, const uint64_t rsp, const std::string& str);
+    void overwrite_all_registers(uint64_t value) const;
+    void print_disasm(ea_t address) const;
+    void push_string(uint64_t rip, uint64_t rsp, std::string str);
     void dump_stack_strings();
-
-    bool is_conditional(const insn_t& insn);
-    bool should_dump(const insn_t& insn);
-    bool should_skip(const insn_t& insn);
-    bool should_handle(const insn_t& insn);
-
-    void force_branch(uc_engine* uc, const insn_t& insn);
-    bool is_external_thunk(ea_t ea);
-    bool handle_call(uc_engine* uc, uint64_t address, uint32_t size, insn_t insn);
+    void force_branch(uc_engine* uc, const insn_t& insn) const;
+    [[nodiscard]] bool is_external_thunk(ea_t ea) const;
+    bool handle_call(uc_engine* uc, uint64_t address, uint32_t size, const insn_t& insn);
 
     static void hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
     static bool hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);
 
     void reset();
-    uc_err safe_start(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count);
+    uc_err safe_start(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count) const;
 
   public:
     bool should_update_dialog = true;
 
-    std::unordered_set<found_string_t, found_string_hash>& get_string_list();
+    [[nodiscard]] const std::unordered_set<found_string_t, found_string_hash>& get_string_list() const noexcept;
     emulator();
     ~emulator();
     void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch);

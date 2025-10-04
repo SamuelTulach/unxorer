@@ -1,9 +1,13 @@
 #pragma once
 
+#define NOMINMAX
 #include <fmt/format.h>
 #include <vector>
+#include <array>
+#include <algorithm>
 #include <unordered_set>
 #include <chrono>
+#include <utility>
 
 #pragma warning(push, 0)
 #include <ida.hpp>
@@ -19,6 +23,11 @@
 
 #include "console.hpp"
 #include "logger.hpp"
+#include "string_result.hpp"
+#include "instruction_classifier.hpp"
+#include "branch_manager.hpp"
+#include "register_mapper.hpp"
+#include "vector_operations.hpp"
 #include "emulator.hpp"
 #include "strings.hpp"
 #include "results.hpp"

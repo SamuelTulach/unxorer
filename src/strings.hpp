@@ -47,6 +47,7 @@ namespace strings
         std::ostringstream oss;
         oss << std::setfill('0') << std::setw(2) << hours << ":" << std::setw(2) << minutes << ":" << std::setw(2)
             << seconds << "." << std::setw(3) << millis;
+
         return oss.str();
     }
 }

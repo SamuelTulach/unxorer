@@ -8,3 +8,4 @@ ReferenceAlignment: Left
 ColumnLimit: 120
 NamespaceIndentation: All
 FixNamespaceComments: false
+SortIncludes: false
