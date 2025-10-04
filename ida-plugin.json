@@ -1,0 +1,12 @@
+{
+  "IDAMetadataDescriptorVersion": 1,
+  "plugin": {
+    "name": "unxorer",
+    "entryPoint": "unxorer",
+    "categories": [ "deobfuscation", "debugging-and-tracing", "malware-analysis" ],
+    "logoPath": "assets/icon.png",
+    "idaVersions": ">=9.1",
+    "description": "Yet another plugin for deobfuscating stack strings.",
+    "version": "1.0.3"
+  }
+}
