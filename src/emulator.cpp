@@ -84,7 +84,7 @@ void emulator::dump_stack_strings()
     }
 
     constexpr size_t max_scan = 0x20000;
-    size_t scan_sz = std::min(stack_base - rsp, max_scan);
+    size_t scan_sz = std::min(static_cast<size_t>(stack_base - rsp), max_scan);
 
     std::vector<uint8_t> buf(scan_sz);
     if (uc_mem_read(engine, rsp, buf.data(), scan_sz) != UC_ERR_OK)
@@ -470,27 +470,13 @@ emulator::emulator()
         return;
     }
 
-    uc_hook_add(engine, &code_hook, UC_HOOK_CODE, hook_code, this, 1, 0);
-    uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem, this, 1, 0);
+    uc_hook_add(engine, &code_hook, UC_HOOK_CODE, reinterpret_cast<void*>(hook_code), this, 1, 0);
+    uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, reinterpret_cast<void*>(hook_mem), this, 1, 0);
 }
 
 emulator::~emulator()
 {
     uc_close(engine);
-}
-
-uc_err emulator::safe_start(uc_engine* uc, const uint64_t begin, const uint64_t until, const uint64_t timeout,
-                            const size_t count) const
-{
-    __try
-    {
-        return uc_emu_start(uc, begin, until, timeout, count);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        logger::info("exception thrown during emulation: {0:x}", GetExceptionCode());
-        return UC_ERR_EXCEPTION;
-    }
 }
 
 const std::unordered_set<found_string_t, found_string_hash>& emulator::get_string_list() const noexcept
@@ -515,7 +501,7 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
     {
         uc_reg_write(engine, UC_X86_REG_RIP, &entry);
 
-        const uc_err err = safe_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
+        const uc_err err = uc_emu_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
         if (err != UC_ERR_OK)
             logger::debug("emulation failure: {0}", uc_strerror(err));
 

@@ -8,6 +8,8 @@
 #include <unordered_set>
 #include <chrono>
 #include <utility>
+#include <atomic>
+#include <optional>
 
 #pragma warning(push, 0)
 #include <ida.hpp>

@@ -59,7 +59,7 @@ static void run_on_all_functions(emulator& emu, uval_t max_time, uval_t max_inst
     for (size_t i = 0; i < total; i++)
     {
         const ea_t start = getn_func(i)->start_ea;
-        replace_wait_box("Emulating function %zu/%zu at 0x%a", i + 1, total, start);
+        replace_wait_box("Emulating function %zu/%zu at 0x%llx", i + 1, total, start);
 
         emu.run(start, max_time, max_instr);
 
