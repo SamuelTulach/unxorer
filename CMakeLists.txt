@@ -6,15 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-if(NOT DEFINED ENV{IDASDK} OR "$ENV{IDASDK}" STREQUAL "")
-    message(FATAL_ERROR "IDASDK environment variable is not set. \
-Set it to the root of your IDA SDK (e.g. C:/idasdk or /opt/idasdk).")
-endif()
-
-set(IDASDK_ROOT "$ENV{IDASDK}" CACHE PATH "Root of the IDA SDK")
+set(IDASDK_ROOT "${CMAKE_CURRENT_LIST_DIR}/ida-sdk/src" CACHE PATH "Root of the IDA SDK")
 
 if(NOT EXISTS "${IDASDK_ROOT}/include/ida.hpp")
-    message(FATAL_ERROR "IDASDK_ROOT='${IDASDK_ROOT}' does not look like an IDA SDK (missing include/ida.hpp).")
+    message(FATAL_ERROR "'${IDASDK_ROOT}' does not look like an IDA SDK (missing include/ida.hpp). Did you forget to init git submodules?")
 endif()
 
 message(STATUS "Using IDA SDK at: ${IDASDK_ROOT}")

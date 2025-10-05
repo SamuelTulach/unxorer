@@ -27,11 +27,8 @@ You can specify one or more starting addresses (e.g. entry point, cursor locatio
    ![results](/assets/results.png)
 
 ## Compiling
-This plugin is targetting IDA Home SDK 9.1 and Windows, but in theory should work on any platform and hopefully future IDA versions as well. Those instructions are Windows specific.
+This plugin is targetting [IDA SDK 9.2](https://github.com/HexRaysSA/ida-sdk) and Windows, but in theory should work on any platform and hopefully future IDA versions as well. Those instructions are Windows specific.
 1. Download and install [Visual Studio 2022](https://visualstudio.microsoft.com/) with [C++ development tools and CMake](https://learn.microsoft.com/en-us/cpp/build/vscpp-step-0-installation?view=msvc-170).
-1. Download the [IDA SDK](https://cpp.docs.hex-rays.com/) and extract it to a directory, e.g. `C:\ida-sdk`.
-1. Set `IDASDK` environment variable to the path of the extracted IDA SDK, e.g. `C:\ida-sdk`.
-   - You can do this by searching for "Environment Variables" in the Start menu and adding a new variable.
 1. Setup vcpkg by following [the setup instructions](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started?pivots=shell-powershell).
 1. Open the `CMakeLists.txt` file in Visual Studio.
 1. Select desired build configuration (**release-x64** or **debug-x64**).
