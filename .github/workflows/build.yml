@@ -78,7 +78,7 @@ jobs:
           out/build/linux-release-x64/unxorer.so
         if-no-files-found: error
 
-  build-macos-arm64:
+  build-macos:
     runs-on: macos-latest
     
     steps:
