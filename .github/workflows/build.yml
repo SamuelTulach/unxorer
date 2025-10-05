@@ -77,3 +77,37 @@ jobs:
         path: |
           out/build/linux-release-x64/unxorer.so
         if-no-files-found: error
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install system dependencies
+      run: |
+        brew install ninja pkg-config
+    
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: '0d9d4684352ba8de70bdf251c6fc9a3c464fa12b'
+    
+    - name: Configure CMake
+      run: cmake --preset mac-release-arm64
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    
+    - name: Build
+      run: cmake --build out/build/mac-release-arm64
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: unxorer-macos-arm64
+        path: |
+          out/build/mac-release-arm64/unxorer.dylib
+        if-no-files-found: error
