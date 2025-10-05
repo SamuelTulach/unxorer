@@ -10,6 +10,7 @@
 #include <utility>
 #include <atomic>
 #include <optional>
+#include <iomanip>
 
 #pragma warning(push, 0)
 #include <ida.hpp>
