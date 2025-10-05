@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: '0d9d4684352ba8de70bdf251c6fc9a3c464fa12b'
+    
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+    
+    - name: Configure CMake
+      run: cmake --preset win-release-x64
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    
+    - name: Build
+      run: cmake --build out/build/win-release-x64
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: unxorer-windows-x64
+        path: |
+          out/build/win-release-x64/plugins/unxorer.dll
+        if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build pkg-config
+    
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: '0d9d4684352ba8de70bdf251c6fc9a3c464fa12b'
+    
+    - name: Configure CMake
+      run: cmake --preset linux-release-x64
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    
+    - name: Build
+      run: cmake --build out/build/linux-release-x64
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: unxorer-linux-x64
+        path: |
+          out/build/linux-release-x64/plugins/unxorer.so
+        if-no-files-found: error
