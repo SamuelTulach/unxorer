@@ -40,7 +40,7 @@ jobs:
       with:
         name: unxorer-windows-x64
         path: |
-          out/build/win-release-x64/plugins/unxorer.dll
+          out/build/win-release-x64/unxorer.dll
         if-no-files-found: error
 
   build-linux:
@@ -75,5 +75,5 @@ jobs:
       with:
         name: unxorer-linux-x64
         path: |
-          out/build/linux-release-x64/plugins/unxorer.so
+          out/build/linux-release-x64/unxorer.so
         if-no-files-found: error

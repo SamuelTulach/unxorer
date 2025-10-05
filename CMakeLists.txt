@@ -110,5 +110,3 @@ else()
 endif()
 
 set_target_properties(unxorer PROPERTIES PREFIX "")
-
-set_target_properties(unxorer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins")
