@@ -1,7 +1,7 @@
 # unxorer
 Yet another plugin for deobfuscating stack strings.
 
-![demo](/assets/demo.gif)
+![demo](/assets/demo_macos.gif)
 
 ## Concept
 You can specify one or more starting addresses (e.g. entry point, cursor location, or all functions in the database), from which the plugin will emulate every feasible execution path using [Unicorn](https://www.unicorn-engine.org/). Conditional jumps are forced to branch, and emulation states are saved and restored as needed. Throughout this process, the stack is scanned for strings. When it encounters calls to unknown memory regions (typically imports) or unsupported instructions, it attempts to skip over them so that as many paths as possible can be emulated.
