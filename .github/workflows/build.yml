@@ -41,6 +41,7 @@ jobs:
         name: unxorer-windows-x64
         path: |
           out/build/win-release-x64/unxorer.dll
+          out/build/win-release-x64/unxorer.pdb
         if-no-files-found: error
 
   build-linux:
