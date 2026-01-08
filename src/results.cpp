@@ -7,14 +7,13 @@ class results_chooser_t final : public chooser_t
     static constexpr const char* const results_headers_[] = {"rip", "rsp", "string"};
 
   private:
-    std::vector<found_string_t> list_;
+    std::vector<found_string_t> rows_;
 
   public:
-    results_chooser_t(const char* desired_title, const std::unordered_set<found_string_t, found_string_hash>& list)
+    results_chooser_t(const char* desired_title, std::vector<found_string_t> list)
         : chooser_t(0, 3, results_widths_, results_headers_, desired_title)
     {
-        list_.reserve(list.size());
-        list_.assign(list.begin(), list.end());
+        rows_ = std::move(list);
     }
 
     const void* get_obj_id(size_t* len) const override
@@ -25,15 +24,15 @@ class results_chooser_t final : public chooser_t
 
     [[nodiscard]] size_t idaapi get_count() const override
     {
-        return list_.size();
+        return rows_.size();
     }
 
     void idaapi get_row(qstrvec_t* cols, int* icon_, chooser_item_attrs_t* attrs, size_t n) const override
     {
-        if (n >= list_.size())
+        if (n >= rows_.size())
             return;
 
-        const auto& item = list_[n];
+        const auto& item = rows_[n];
         (*cols)[0].sprnt("%016" PRIX64, item.rip);
         (*cols)[1].sprnt("%016" PRIX64, item.rsp);
         (*cols)[2].sprnt("%s", item.data.c_str());
@@ -41,8 +40,8 @@ class results_chooser_t final : public chooser_t
 
     cbret_t idaapi enter(size_t n) override
     {
-        if (n < list_.size())
-            jumpto(list_[n].rip);
+        if (n < rows_.size())
+            jumpto(rows_[n].rip);
 
         return cbret_t(0);
     }
@@ -58,6 +57,10 @@ void results::display(const std::unordered_set<found_string_t, found_string_hash
     logger::info(" - time:            {0}", strings::format_duration(duration));
     logger::info("finished, found {0} unique strings", string_list.size());
 
-    const auto results = new results_chooser_t("unxorer", string_list);
+    std::vector<found_string_t> display_list;
+    display_list.reserve(string_list.size());
+    display_list.assign(string_list.begin(), string_list.end());
+
+    const auto results = new results_chooser_t("unxorer", std::move(display_list));
     results->choose();
 }
