@@ -31,8 +31,8 @@ static std::optional<emulation_config> get_user_config()
                                          "<Max loop iterations (per function) : D:20:10::>\n";
 
     int scope_val = 0;
-    uval_t max_time = 10000;
-    uval_t max_instr = 100000;
+    uval_t max_time = 60000;
+    uval_t max_instr = 1000000;
     uval_t max_loops = 50;
 
     if (!ask_form(form, &scope_val, &max_time, &max_instr, &max_loops))
