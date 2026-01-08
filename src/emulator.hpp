@@ -27,6 +27,7 @@ class emulator
     std::unordered_map<uint64_t, size_t> loop_iterations_;
     size_t loop_iteration_limit = 0;
     std::chrono::high_resolution_clock::time_point next_waitbox_update;
+    std::vector<uint8_t> stack_buffer_;
 
     void overwrite_all_registers(uint64_t value) const;
     void print_disasm(ea_t address) const;
@@ -35,6 +36,7 @@ class emulator
     void force_branch(uc_engine* uc, const insn_t& insn) const;
     [[nodiscard]] bool is_external_thunk(ea_t ea) const;
     bool handle_call(uc_engine* uc, uint64_t address, uint32_t size, const insn_t& insn);
+    static uc_err start_emulation(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count);
 
     static void hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
     static bool hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);

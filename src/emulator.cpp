@@ -84,26 +84,31 @@ void emulator::dump_stack_strings()
     }
 
     constexpr size_t max_scan = 0x8000;
-    size_t scan_sz = std::min(static_cast<size_t>(stack_base - rsp), max_scan);
-
-    std::vector<uint8_t> buf(scan_sz);
-    if (uc_mem_read(engine, rsp, buf.data(), scan_sz) != UC_ERR_OK)
-    {
-        logger::debug("failed to read stack memory at {0:x} with size {1:x}", rsp, scan_sz);
+    const size_t scan_sz = std::min(static_cast<size_t>(stack_base - rsp), max_scan);
+    if (scan_sz == 0)
         return;
-    }
+
+    const uint64_t stack_begin = stack_base - stack_size;
+    const size_t offset = static_cast<size_t>(rsp - stack_begin);
+    if (offset >= stack_buffer_.size())
+        return;
+
+    if (offset + scan_sz > stack_buffer_.size())
+        return;
+
+    uint8_t* buffer = stack_buffer_.data() + offset;
 
     for (size_t i = 0; i < scan_sz;)
     {
-        if (strings::is_ascii_printable(buf[i]))
+        if (strings::is_ascii_printable(buffer[i]))
         {
             size_t j = i;
-            while (j < scan_sz && strings::is_ascii_printable(buf[j]))
+            while (j < scan_sz && strings::is_ascii_printable(buffer[j]))
                 ++j;
 
-            if (j - i >= 4 && j < scan_sz && buf[j] == 0)
+            if (j - i >= 4 && j < scan_sz && buffer[j] == 0)
             {
-                std::string s(reinterpret_cast<char*>(&buf[i]), j - i);
+                std::string s(reinterpret_cast<const char*>(buffer + i), j - i);
                 push_string(rip, rsp - (i + 1), std::move(s));
             }
 
@@ -111,15 +116,15 @@ void emulator::dump_stack_strings()
             continue;
         }
 
-        if (i + 3 < scan_sz && strings::is_utf16_printable(*reinterpret_cast<const uint16_t*>(&buf[i])))
+        if (i + 3 < scan_sz && strings::is_utf16_printable(*reinterpret_cast<const uint16_t*>(buffer + i)))
         {
             size_t j = i;
-            while (j + 1 < scan_sz && strings::is_utf16_printable(*reinterpret_cast<const uint16_t*>(&buf[j])))
+            while (j + 1 < scan_sz && strings::is_utf16_printable(*reinterpret_cast<const uint16_t*>(buffer + j)))
                 j += 2;
 
-            if ((j - i) / 2 >= 4 && j + 1 < scan_sz && buf[j] == 0 && buf[j + 1] == 0)
+            if ((j - i) / 2 >= 4 && j + 1 < scan_sz && buffer[j] == 0 && buffer[j + 1] == 0)
             {
-                std::string s = strings::utf16le_to_ascii(&buf[i], (j - i) / 2);
+                std::string s = strings::utf16le_to_ascii(buffer + i, (j - i) / 2);
                 push_string(rip, rsp - (i + 2), std::move(s));
             }
 
@@ -405,6 +410,25 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         current->force_branch(uc, insn);
 }
 
+uc_err emulator::start_emulation(uc_engine* uc, const uint64_t begin, const uint64_t until, const uint64_t timeout,
+                                 const size_t count)
+{
+#if defined(_WIN32)
+    seh_details details;
+    __try
+    {
+        return uc_emu_start(uc, begin, until, timeout, count);
+    }
+    __except (capture_seh_info(GetExceptionCode(), GetExceptionInformation(), &details))
+    {
+        logger::info("SEH captured exception 0x{0:X} at {1:p}", static_cast<uint64_t>(details.code), details.address);
+        return UC_ERR_EXCEPTION;
+    }
+#else
+    return uc_emu_start(uc, begin, until, timeout, count);
+#endif
+}
+
 bool emulator::hook_mem(uc_engine* uc, uc_mem_type type, const uint64_t address, int size, int64_t value,
                         void* user_data)
 {
@@ -489,7 +513,10 @@ emulator::emulator()
         return;
     }
 
-    err = uc_mem_map(engine, stack_base - stack_size, stack_size, UC_PROT_READ | UC_PROT_WRITE);
+    stack_buffer_.resize(stack_size);
+
+    err =
+        uc_mem_map_ptr(engine, stack_base - stack_size, stack_size, UC_PROT_READ | UC_PROT_WRITE, stack_buffer_.data());
     if (err != UC_ERR_OK)
     {
         logger::info("failed to map stack: {0}", uc_strerror(err));
@@ -549,7 +576,7 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
         const auto slice_begin = std::chrono::high_resolution_clock::now();
         const uint64_t instr_before = counters::instructions_executed.load();
 
-        const uc_err err = uc_emu_start(engine, entry, 0, time_slice, instr_slice);
+        const uc_err err = start_emulation(engine, entry, 0, time_slice, instr_slice);
         if (err != UC_ERR_OK)
             logger::debug("emulation failure: {0}", uc_strerror(err));
 
