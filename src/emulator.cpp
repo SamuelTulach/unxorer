@@ -83,7 +83,7 @@ void emulator::dump_stack_strings()
         return;
     }
 
-    constexpr size_t max_scan = 0x20000;
+    constexpr size_t max_scan = 0x8000;
     size_t scan_sz = std::min(static_cast<size_t>(stack_base - rsp), max_scan);
 
     std::vector<uint8_t> buf(scan_sz);
