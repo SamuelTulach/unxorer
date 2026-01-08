@@ -66,7 +66,11 @@ void emulator::push_string(const uint64_t rip, const uint64_t rsp, std::string s
     strings::left_trim(escaped);
     strings::right_trim(escaped);
 
-    string_list_.emplace(found_string_t{rip, rsp, std::move(escaped)});
+    if (escaped.empty())
+        return;
+
+    const size_t hash = strings::hash_string(escaped);
+    string_list_.emplace(found_string_t{rip, rsp, hash, std::move(escaped)});
 }
 
 void emulator::dump_stack_strings()

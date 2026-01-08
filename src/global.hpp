@@ -12,6 +12,11 @@
 #include <atomic>
 #include <optional>
 #include <iomanip>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <sstream>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
