@@ -24,6 +24,8 @@ class emulator
 
     branch_manager branches_;
     std::unordered_set<found_string_t, found_string_hash> string_list_;
+    std::unordered_map<uint64_t, size_t> loop_iterations_;
+    size_t loop_iteration_limit = 0;
 
     void overwrite_all_registers(uint64_t value) const;
     void print_disasm(ea_t address) const;
@@ -44,5 +46,5 @@ class emulator
     [[nodiscard]] const std::unordered_set<found_string_t, found_string_hash>& get_string_list() const noexcept;
     emulator();
     ~emulator();
-    void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr);
+    void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr, uint64_t max_loop_iterations);
 };

@@ -376,6 +376,22 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
 
     current->branches_.mark_visited(fallthrough);
 
+    if (taken <= address)
+    {
+        auto [entry, inserted] = current->loop_iterations_.try_emplace(address, 0);
+        size_t& count = entry->second;
+        if (++count >= current->loop_iteration_limit)
+        {
+            current->loop_iterations_.erase(entry);
+            uc_reg_write(uc, UC_X86_REG_RIP, &fallthrough);
+            return;
+        }
+    }
+    else
+    {
+        current->loop_iterations_.erase(address);
+    }
+
     if (taken > address)
         current->force_branch(uc, insn);
 }
@@ -400,6 +416,7 @@ void emulator::reset()
 {
     branches_.clear();
     string_list_.clear();
+    loop_iterations_.clear();
 
     counters::start_time.store(std::nullopt);
     counters::instructions_executed = 0;
@@ -485,7 +502,7 @@ const std::unordered_set<found_string_t, found_string_hash>& emulator::get_strin
     return string_list_;
 }
 
-void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr)
+void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr, const uint64_t max_loop_iterations)
 {
     logger::debug("starting emulation from {0:x}...", start);
 
@@ -495,6 +512,9 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
     overwrite_all_registers(0x2000);
 
     uc_reg_write(engine, UC_X86_REG_RSP, &stack_base);
+
+    loop_iterations_.clear();
+    loop_iteration_limit = max_loop_iterations;
 
     const bool limit_time = max_time_ms != 0;
     const bool limit_instr = max_instr != 0;

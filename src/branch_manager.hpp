@@ -19,7 +19,7 @@ class branch_manager
 
         branch_state_t& operator=(branch_state_t&& other) noexcept
         {
-            if (this == &other)
+            if (this != &other)
             {
                 if (ctx)
                     uc_context_free(ctx);
