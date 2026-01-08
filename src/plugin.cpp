@@ -30,7 +30,7 @@ static std::optional<emulation_config> get_user_config()
 
     int scope_val = 0;
     uval_t max_time = 10000;
-    uval_t max_instr = 15000;
+    uval_t max_instr = 100000;
 
     if (!ask_form(form, &scope_val, &max_time, &max_instr))
         return std::nullopt;

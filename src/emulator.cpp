@@ -471,7 +471,8 @@ emulator::emulator()
     }
 
     uc_hook_add(engine, &code_hook, UC_HOOK_CODE, reinterpret_cast<void*>(hook_code), this, 1, 0);
-    uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, reinterpret_cast<void*>(hook_mem), this, 1, 0);
+    uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED,
+                reinterpret_cast<void*>(hook_mem), this, 1, 0);
 }
 
 emulator::~emulator()
@@ -484,7 +485,7 @@ const std::unordered_set<found_string_t, found_string_hash>& emulator::get_strin
     return string_list_;
 }
 
-void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr_branch)
+void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr)
 {
     logger::debug("starting emulation from {0:x}...", start);
 
@@ -495,15 +496,53 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
 
     uc_reg_write(engine, UC_X86_REG_RSP, &stack_base);
 
+    const bool limit_time = max_time_ms != 0;
+    const bool limit_instr = max_instr != 0;
+    uint64_t remaining_time_us = max_time_ms * 1000;
+    uint64_t instructions_left = max_instr;
+
     uint64_t entry = start;
 
     for (;;)
     {
+        if (limit_time && remaining_time_us == 0)
+            break;
+
+        if (limit_instr && instructions_left == 0)
+            break;
+
         uc_reg_write(engine, UC_X86_REG_RIP, &entry);
 
-        const uc_err err = uc_emu_start(engine, entry, 0, max_time_ms * 1000, max_instr_branch);
+        const uint64_t instr_slice = limit_instr ? instructions_left : 0;
+        const uint64_t time_slice = limit_time ? remaining_time_us : 0;
+        const auto slice_begin = std::chrono::high_resolution_clock::now();
+        const uint64_t instr_before = counters::instructions_executed.load();
+
+        const uc_err err = uc_emu_start(engine, entry, 0, time_slice, instr_slice);
         if (err != UC_ERR_OK)
             logger::debug("emulation failure: {0}", uc_strerror(err));
+
+        if (limit_instr)
+        {
+            const uint64_t instr_after = counters::instructions_executed.load();
+            const uint64_t delta = instr_after >= instr_before ? instr_after - instr_before : 0;
+            if (delta >= instructions_left)
+                instructions_left = 0;
+            else
+                instructions_left -= delta;
+        }
+
+        if (limit_time)
+        {
+            const auto slice_end = std::chrono::high_resolution_clock::now();
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(slice_end - slice_begin);
+            const int64_t elapsed_count = elapsed.count();
+            const uint64_t elapsed_us = elapsed_count <= 0 ? 0 : static_cast<uint64_t>(elapsed_count);
+            if (elapsed_us >= remaining_time_us)
+                remaining_time_us = 0;
+            else
+                remaining_time_us -= elapsed_us;
+        }
 
         if (!branches_.has_pending())
             break;

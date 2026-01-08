@@ -44,5 +44,5 @@ class emulator
     [[nodiscard]] const std::unordered_set<found_string_t, found_string_hash>& get_string_list() const noexcept;
     emulator();
     ~emulator();
-    void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr_branch);
+    void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr);
 };
