@@ -330,13 +330,22 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
     if (!decode_insn(&insn, address))
         return;
 
+#ifndef NDEBUG
     current->print_disasm(address);
+#endif
 
     ++counters::instructions_executed;
 
     if (current->should_update_dialog)
-        replace_wait_box("Emulating at 0x%a, executed %zu instructions", address,
-                         counters::instructions_executed.load());
+    {
+        const auto now = std::chrono::high_resolution_clock::now();
+        if (now >= current->next_waitbox_update)
+        {
+            size_t executed = counters::instructions_executed.load();
+            replace_wait_box("Emulating at 0x%a, executed %zu instructions", address, executed);
+            current->next_waitbox_update = now + std::chrono::seconds(1);
+        }
+    }
 
     if (instruction_classifier::should_skip(insn.itype))
     {
@@ -417,6 +426,7 @@ void emulator::reset()
     branches_.clear();
     string_list_.clear();
     loop_iterations_.clear();
+    next_waitbox_update = std::chrono::high_resolution_clock::now();
 
     counters::start_time.store(std::nullopt);
     counters::instructions_executed = 0;
@@ -515,6 +525,7 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
 
     loop_iterations_.clear();
     loop_iteration_limit = max_loop_iterations;
+    next_waitbox_update = std::chrono::high_resolution_clock::now();
 
     const bool limit_time = max_time_ms != 0;
     const bool limit_instr = max_instr != 0;

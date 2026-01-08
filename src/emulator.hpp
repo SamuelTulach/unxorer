@@ -26,6 +26,7 @@ class emulator
     std::unordered_set<found_string_t, found_string_hash> string_list_;
     std::unordered_map<uint64_t, size_t> loop_iterations_;
     size_t loop_iteration_limit = 0;
+    std::chrono::high_resolution_clock::time_point next_waitbox_update;
 
     void overwrite_all_registers(uint64_t value) const;
     void print_disasm(ea_t address) const;
