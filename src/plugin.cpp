@@ -41,13 +41,20 @@ static std::optional<emulation_config> get_user_config()
     return emulation_config{static_cast<emulation_scope>(scope_val), max_time, max_instr, max_loops};
 }
 
-static void run_on_function(emulator& emu, ea_t start, uval_t max_time, uval_t max_instr, uval_t max_loops)
+static void run_on_function(ea_t start, uval_t max_time, uval_t max_instr, uval_t max_loops)
 {
+    emulator emu;
+    if (!emu.is_ready())
+    {
+        warning("Failed to initialize emulator");
+        return;
+    }
+
     emu.run(start, max_time, max_instr, max_loops);
     results::display(emu.get_string_list());
 }
 
-static void run_on_all_functions(emulator& emu, uval_t max_time, uval_t max_instr, uval_t max_loops)
+static void run_on_all_functions(uval_t max_time, uval_t max_instr, uval_t max_loops)
 {
     const size_t total = get_func_qty();
     if (total == 0)
@@ -57,20 +64,32 @@ static void run_on_all_functions(emulator& emu, uval_t max_time, uval_t max_inst
     }
 
     logger::info("running on {0} functions in database", total);
-    emu.should_update_dialog = false;
+
+    std::unordered_set<found_string_t, found_string_hash> aggregated;
 
     for (size_t i = 0; i < total; i++)
     {
+        emulator emu;
+        if (!emu.is_ready())
+        {
+            warning("Failed to initialize emulator");
+            break;
+        }
+
+        emu.should_update_dialog = false;
         const ea_t start = getn_func(i)->start_ea;
         replace_wait_box("Emulating function %zu/%zu at 0x%llx", i + 1, total, start);
 
         emu.run(start, max_time, max_instr, max_loops);
 
+        const auto& strings = emu.get_string_list();
+        aggregated.insert(strings.begin(), strings.end());
+
         if (user_cancelled())
             break;
     }
 
-    results::display(emu.get_string_list());
+    results::display(aggregated);
 }
 
 static plugmod_t* idaapi init()
@@ -99,31 +118,28 @@ static bool idaapi run(size_t)
     if (!config)
         return false;
 
+    counters::reset();
     show_wait_box("Initializing");
-    emulator emu;
 
     switch (config->scope)
     {
     case emulation_scope::current_function:
         if (const func_t* func = get_func(get_screen_ea()); func)
-            run_on_function(emu, func->start_ea, config->max_time_ms, config->max_instructions,
-                            config->max_loop_iterations);
+            run_on_function(func->start_ea, config->max_time_ms, config->max_instructions, config->max_loop_iterations);
         else
             warning("No function under cursor");
         break;
 
     case emulation_scope::every_function:
-        run_on_all_functions(emu, config->max_time_ms, config->max_instructions, config->max_loop_iterations);
+        run_on_all_functions(config->max_time_ms, config->max_instructions, config->max_loop_iterations);
         break;
 
     case emulation_scope::current_cursor:
-        run_on_function(emu, get_screen_ea(), config->max_time_ms, config->max_instructions,
-                        config->max_loop_iterations);
+        run_on_function(get_screen_ea(), config->max_time_ms, config->max_instructions, config->max_loop_iterations);
         break;
 
     case emulation_scope::entry_point:
-        run_on_function(emu, inf_get_start_ea(), config->max_time_ms, config->max_instructions,
-                        config->max_loop_iterations);
+        run_on_function(inf_get_start_ea(), config->max_time_ms, config->max_instructions, config->max_loop_iterations);
         break;
     }
 

@@ -13,6 +13,17 @@ namespace counters
     inline std::atomic<size_t> external_calls = 0;
     inline std::atomic<size_t> import_thunks = 0;
     inline std::atomic<std::optional<std::chrono::high_resolution_clock::time_point>> start_time;
+
+    inline void reset()
+    {
+        instructions_executed = 0;
+        branched = 0;
+        already_visited = 0;
+        skipped = 0;
+        external_calls = 0;
+        import_thunks = 0;
+        start_time.store(std::nullopt);
+    }
 }
 
 class emulator
@@ -26,8 +37,10 @@ class emulator
     std::unordered_set<found_string_t, found_string_hash> string_list_;
     std::unordered_map<uint64_t, size_t> loop_iterations_;
     size_t loop_iteration_limit = 0;
-    std::chrono::high_resolution_clock::time_point next_waitbox_update;
+    std::chrono::high_resolution_clock::time_point next_waitbox_update = std::chrono::high_resolution_clock::now();
     std::vector<uint8_t> stack_buffer_;
+    std::vector<uint8_t> image_buffer_;
+    std::vector<uint8_t> image_backup_;
 
     void overwrite_all_registers(uint64_t value) const;
     void print_disasm(ea_t address) const;
@@ -36,12 +49,9 @@ class emulator
     void force_branch(uc_engine* uc, const insn_t& insn) const;
     [[nodiscard]] bool is_external_thunk(ea_t ea) const;
     bool handle_call(uc_engine* uc, uint64_t address, uint32_t size, const insn_t& insn);
-    static uc_err start_emulation(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count);
 
     static void hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
     static bool hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);
-
-    void reset();
 
   public:
     bool should_update_dialog = true;
@@ -49,5 +59,9 @@ class emulator
     [[nodiscard]] const std::unordered_set<found_string_t, found_string_hash>& get_string_list() const noexcept;
     emulator();
     ~emulator();
+    [[nodiscard]] bool is_ready() const noexcept
+    {
+        return engine != nullptr;
+    }
     void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr, uint64_t max_loop_iterations);
 };

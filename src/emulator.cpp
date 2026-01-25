@@ -414,72 +414,42 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         current->force_branch(uc, insn);
 }
 
-uc_err emulator::start_emulation(uc_engine* uc, const uint64_t begin, const uint64_t until, const uint64_t timeout,
-                                 const size_t count)
-{
-#if defined(_WIN32)
-    seh_details details;
-    __try
-    {
-        return uc_emu_start(uc, begin, until, timeout, count);
-    }
-    __except (capture_seh_info(GetExceptionCode(), GetExceptionInformation(), &details))
-    {
-        logger::info("SEH captured exception 0x{0:X} at {1:p}", static_cast<uint64_t>(details.code), details.address);
-        return UC_ERR_EXCEPTION;
-    }
-#else
-    return uc_emu_start(uc, begin, until, timeout, count);
-#endif
-}
-
 bool emulator::hook_mem(uc_engine* uc, uc_mem_type type, const uint64_t address, int size, int64_t value,
                         void* user_data)
 {
-    constexpr uint64_t page_mask = ~0xFFFULL;
-    const uint64_t page = address & page_mask;
-
-    if (uc_mem_map(uc, page, 0x1000, UC_PROT_ALL) != UC_ERR_OK)
-        return false;
-
     uint64_t rip = 0;
     uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 
-    logger::debug("mapped missing page {0:x} for {1:x}, resuming...", page, rip);
+    size_t advance = 1;
+    insn_t insn;
+    if (decode_insn(&insn, rip) && insn.size > 0)
+        advance = insn.size;
+
+    const uint64_t next = rip + advance;
+    uc_reg_write(uc, UC_X86_REG_RIP, &next);
+    logger::debug("skipped instruction {0:x} due to unmapped access at {1:x}", rip, address);
     return true;
-}
-
-void emulator::reset()
-{
-    branches_.clear();
-    string_list_.clear();
-    loop_iterations_.clear();
-    next_waitbox_update = std::chrono::high_resolution_clock::now();
-
-    counters::start_time.store(std::nullopt);
-    counters::instructions_executed = 0;
-    counters::branched = 0;
-    counters::already_visited = 0;
-    counters::skipped = 0;
-    counters::external_calls = 0;
-    counters::import_thunks = 0;
-
-    should_update_dialog = true;
 }
 
 emulator::emulator()
 {
-    logger::debug("initializing...");
-    reset();
+    stack_buffer_.resize(stack_size);
 
     uc_err err = uc_open(UC_ARCH_X86, UC_MODE_64, &engine);
     if (err != UC_ERR_OK)
     {
         logger::info("failed to initialize engine: {0}", uc_strerror(err));
+        engine = nullptr;
         return;
     }
 
-    overwrite_all_registers(0x2000);
+    auto cleanup = [&]() {
+        if (engine != nullptr)
+        {
+            uc_close(engine);
+            engine = nullptr;
+        }
+    };
 
     constexpr uint64_t page_size = 0x1000;
     constexpr uint64_t page_mask = ~(page_size - 1);
@@ -490,41 +460,36 @@ emulator::emulator()
     const uint64_t map_start = img_min & page_mask;
     const uint64_t map_end = (img_max + page_size - 1) & page_mask;
     const size_t map_size = map_end - map_start;
+    const size_t image_size = img_max - img_min;
+    const size_t image_offset = static_cast<size_t>(img_min - map_start);
 
-    err = uc_mem_map(engine, map_start, map_size, UC_PROT_ALL);
-    if (err != UC_ERR_OK)
-    {
-        logger::info("failed to map memory range {0:x} to {1:x}: {2}", img_min, img_max, uc_strerror(err));
-        uc_close(engine);
-        return;
-    }
+    image_buffer_.assign(map_size, 0);
+    image_backup_.assign(map_size, 0);
 
-    const size_t size = img_max - img_min;
-    std::vector<uint8_t> buffer(size);
-    const ssize_t got = get_bytes(buffer.data(), size, img_min, GMB_READALL);
+    const ssize_t got = get_bytes(image_buffer_.data() + image_offset, image_size, img_min, GMB_READALL);
     if (got <= 0)
     {
         logger::info("failed to read memory from {0:x} to {1:x}: {2}", img_min, img_max, got);
-        uc_close(engine);
+        cleanup();
         return;
     }
 
-    err = uc_mem_write(engine, img_min, buffer.data(), size);
+    image_backup_ = image_buffer_;
+
+    err = uc_mem_map_ptr(engine, map_start, map_size, UC_PROT_ALL, image_buffer_.data());
     if (err != UC_ERR_OK)
     {
-        logger::info("failed to write memory from {0:x} with size {1:x}: {2}", img_min, size, uc_strerror(err));
-        uc_close(engine);
+        logger::info("failed to map image memory range {0:x} to {1:x}: {2}", img_min, img_max, uc_strerror(err));
+        cleanup();
         return;
     }
-
-    stack_buffer_.resize(stack_size);
 
     err =
         uc_mem_map_ptr(engine, stack_base - stack_size, stack_size, UC_PROT_READ | UC_PROT_WRITE, stack_buffer_.data());
     if (err != UC_ERR_OK)
     {
         logger::info("failed to map stack: {0}", uc_strerror(err));
-        uc_close(engine);
+        cleanup();
         return;
     }
 
@@ -535,7 +500,11 @@ emulator::emulator()
 
 emulator::~emulator()
 {
-    uc_close(engine);
+    if (engine != nullptr)
+    {
+        uc_close(engine);
+        engine = nullptr;
+    }
 }
 
 const std::unordered_set<found_string_t, found_string_hash>& emulator::get_string_list() const noexcept
@@ -545,18 +514,29 @@ const std::unordered_set<found_string_t, found_string_hash>& emulator::get_strin
 
 void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr, const uint64_t max_loop_iterations)
 {
+    if (engine == nullptr)
+        return;
+
     logger::debug("starting emulation from {0:x}...", start);
+
+    branches_.clear();
+    string_list_.clear();
+    loop_iterations_.clear();
+    loop_iteration_limit = max_loop_iterations;
+    next_waitbox_update = std::chrono::high_resolution_clock::now();
+
+    if (!image_backup_.empty())
+        std::copy(image_backup_.begin(), image_backup_.end(), image_buffer_.begin());
+
+    if (!stack_buffer_.empty())
+        std::fill(stack_buffer_.begin(), stack_buffer_.end(), 0);
 
     if (!counters::start_time.load().has_value())
         counters::start_time.store(std::chrono::high_resolution_clock::now());
 
     overwrite_all_registers(0x2000);
-
-    uc_reg_write(engine, UC_X86_REG_RSP, &stack_base);
-
-    loop_iterations_.clear();
-    loop_iteration_limit = max_loop_iterations;
-    next_waitbox_update = std::chrono::high_resolution_clock::now();
+    const uint64_t initial_rsp = stack_base - 0x1000;
+    uc_reg_write(engine, UC_X86_REG_RSP, &initial_rsp);
 
     const bool limit_time = max_time_ms != 0;
     const bool limit_instr = max_instr != 0;
@@ -580,7 +560,7 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
         const auto slice_begin = std::chrono::high_resolution_clock::now();
         const uint64_t instr_before = counters::instructions_executed.load();
 
-        const uc_err err = start_emulation(engine, entry, 0, time_slice, instr_slice);
+        const uc_err err = uc_emu_start(engine, entry, 0, time_slice, instr_slice);
         if (err != UC_ERR_OK)
             logger::debug("emulation failure: {0}", uc_strerror(err));
 
