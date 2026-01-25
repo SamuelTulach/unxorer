@@ -29,13 +29,19 @@ namespace counters
 class emulator
 {
   private:
+    struct loop_state
+    {
+        uint64_t hits = 0;
+        uint64_t last_target = 0;
+    };
+
     uc_engine* engine = nullptr;
     uc_hook code_hook = 0;
     uc_hook mem_hook = 0;
 
     branch_manager branches_;
     std::unordered_set<found_string_t, found_string_hash> string_list_;
-    std::unordered_map<uint64_t, size_t> loop_iterations_;
+    std::unordered_map<uint64_t, loop_state> loop_iterations_;
     size_t loop_iteration_limit = 0;
     std::chrono::high_resolution_clock::time_point next_waitbox_update = std::chrono::high_resolution_clock::now();
     std::vector<uint8_t> stack_buffer_;
@@ -49,6 +55,8 @@ class emulator
     void force_branch(uc_engine* uc, const insn_t& insn) const;
     [[nodiscard]] bool is_external_thunk(ea_t ea) const;
     bool handle_call(uc_engine* uc, uint64_t address, uint32_t size, const insn_t& insn);
+    bool schedule_branch(uc_engine* uc, uint64_t from, uint64_t target);
+    void discover_indirect_targets(uc_engine* uc, uint64_t address, const insn_t& insn);
 
     static void hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
     static bool hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);

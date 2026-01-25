@@ -3,6 +3,27 @@
 class branch_manager
 {
   public:
+    struct branch_key
+    {
+        uint64_t rip;
+        uint64_t target;
+
+        bool operator==(const branch_key& other) const noexcept
+        {
+            return rip == other.rip && target == other.target;
+        }
+    };
+
+    struct branch_key_hash
+    {
+        size_t operator()(const branch_key& key) const noexcept
+        {
+            size_t h1 = std::hash<uint64_t>{}(key.rip);
+            size_t h2 = std::hash<uint64_t>{}(key.target);
+            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+        }
+    };
+
     struct branch_state_t
     {
         uc_context* ctx = nullptr;
@@ -60,14 +81,14 @@ class branch_manager
         return state;
     }
 
-    [[nodiscard]] bool is_visited(uint64_t address) const noexcept
+    [[nodiscard]] bool is_visited(const branch_key& key) const noexcept
     {
-        return visited_.contains(address);
+        return visited_.contains(key);
     }
 
-    void mark_visited(uint64_t address)
+    void mark_visited(const branch_key& key)
     {
-        visited_.insert(address);
+        visited_.insert(key);
     }
 
     void clear()
@@ -78,5 +99,5 @@ class branch_manager
 
   private:
     std::vector<branch_state_t> pending_;
-    std::unordered_set<uint64_t> visited_;
+    std::unordered_set<branch_key, branch_key_hash> visited_;
 };

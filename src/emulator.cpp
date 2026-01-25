@@ -140,6 +140,55 @@ void emulator::dump_stack_strings()
     }
 }
 
+bool emulator::schedule_branch(uc_engine* uc, const uint64_t from, const uint64_t target)
+{
+    branch_manager::branch_key key{from, target};
+    if (branches_.is_visited(key))
+    {
+        ++counters::already_visited;
+        return false;
+    }
+
+    const ea_t img_min = inf_get_min_ea();
+    const ea_t img_max = inf_get_max_ea();
+    if (target < img_min || target >= img_max)
+    {
+        branches_.mark_visited(key);
+        return false;
+    }
+
+    branches_.save_branch(uc, target);
+    branches_.mark_visited(key);
+    ++counters::branched;
+    return true;
+}
+
+void emulator::discover_indirect_targets(uc_engine* uc, const uint64_t address, const insn_t& insn)
+{
+    constexpr int indirect_types[] = {NN_jmp, NN_jmpfi, NN_jmpni, NN_call, NN_callfi, NN_callni};
+    bool relevant = false;
+    for (const auto type : indirect_types)
+    {
+        if (type == insn.itype)
+        {
+            relevant = true;
+            break;
+        }
+    }
+
+    if (!relevant)
+        return;
+
+    if (insn.Op1.type != o_mem && insn.Op1.type != o_displ)
+        return;
+
+    uint64_t dest = 0;
+    if (uc_mem_read(uc, insn.Op1.addr, &dest, sizeof(dest)) != UC_ERR_OK)
+        return;
+
+    schedule_branch(uc, address, dest);
+}
+
 void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
 {
     constexpr uint64_t f_cf = 0x00000001ull;
@@ -158,71 +207,106 @@ void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
     {
     case NN_jz:
     case NN_je:
+    case NN_cmovz:
+    case NN_sete:
+    case NN_setz:
         set(f_zf);
         break;
     case NN_jnz:
     case NN_jne:
+    case NN_cmovnz:
+    case NN_setne:
+    case NN_setnz:
         clear(f_zf);
         break;
 
     case NN_jc:
     case NN_jb:
     case NN_jnae:
+    case NN_cmovb:
+    case NN_setb:
+    case NN_setc:
         set(f_cf);
         break;
     case NN_jnc:
     case NN_jnb:
     case NN_jae:
+    case NN_setae:
         clear(f_cf);
         break;
 
     case NN_js:
+    case NN_cmovs:
+    case NN_sets:
         set(f_sf);
         break;
     case NN_jns:
+    case NN_cmovns:
+    case NN_setns:
         clear(f_sf);
         break;
 
     case NN_jo:
+    case NN_cmovo:
+    case NN_seto:
         set(f_of);
         break;
     case NN_jno:
+    case NN_cmovno:
+    case NN_setno:
         clear(f_of);
         break;
 
     case NN_jp:
     case NN_jpe:
+    case NN_cmovp:
+    case NN_setp:
         set(f_pf);
         break;
     case NN_jnp:
     case NN_jpo:
+    case NN_cmovnp:
+    case NN_setnp:
+    case NN_setpo:
         clear(f_pf);
         break;
 
     case NN_ja:
     case NN_jnbe:
+    case NN_cmova:
+    case NN_seta:
         clear(f_cf | f_zf);
         break;
     case NN_jbe:
     case NN_jna:
+    case NN_cmovbe:
+    case NN_setbe:
         set(f_cf);
         break;
 
     case NN_jg:
     case NN_jnle:
+    case NN_cmovg:
+    case NN_setg:
         clear(f_zf | f_sf | f_of);
         break;
     case NN_jge:
     case NN_jnl:
+    case NN_cmovge:
+    case NN_setge:
         clear(f_sf | f_of);
         break;
     case NN_jl:
     case NN_jnge:
+    case NN_cmovl:
+    case NN_setl:
         set(f_sf);
         clear(f_of);
         break;
     case NN_jle:
     case NN_jng:
+    case NN_cmovle:
+    case NN_setle:
         set(f_zf);
         break;
 
@@ -376,33 +460,54 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
     if (current->handle_call(uc, address, size, insn))
         return;
 
+    current->discover_indirect_targets(uc, address, insn);
+
     if (!instruction_classifier::is_conditional(insn.itype))
         return;
+
+    const bool is_branch = instruction_classifier::is_branch(insn.itype);
+    if (!is_branch)
+    {
+        current->force_branch(uc, insn);
+        return;
+    }
 
     const uint64_t taken = insn.Op1.addr;
     const uint64_t fallthrough = address + size;
 
-    if (!current->branches_.is_visited(fallthrough))
-    {
-        current->branches_.save_branch(uc, fallthrough);
-        ++counters::branched;
-    }
-    else
-    {
-        ++counters::already_visited;
-    }
-
-    current->branches_.mark_visited(fallthrough);
+    current->schedule_branch(uc, address, fallthrough);
 
     if (taken <= address)
     {
-        auto [entry, inserted] = current->loop_iterations_.try_emplace(address, 0);
-        size_t& count = entry->second;
-        if (++count >= current->loop_iteration_limit)
+        if (current->loop_iteration_limit == 0)
         {
-            current->loop_iterations_.erase(entry);
-            uc_reg_write(uc, UC_X86_REG_RIP, &fallthrough);
-            return;
+            current->loop_iterations_.erase(address);
+        }
+        else
+        {
+            auto [entry, inserted] = current->loop_iterations_.try_emplace(address, emulator::loop_state{0, taken});
+            auto& state = entry->second;
+            if (state.last_target != taken)
+            {
+                state.last_target = taken;
+                state.hits = 0;
+            }
+
+            ++state.hits;
+            const uint64_t span = address - taken;
+            uint64_t allowance = current->loop_iteration_limit;
+            const uint64_t bonus = span / 4;
+            if (bonus > std::numeric_limits<uint64_t>::max() - allowance)
+                allowance = std::numeric_limits<uint64_t>::max();
+            else
+                allowance += bonus;
+
+            if (state.hits >= allowance)
+            {
+                current->loop_iterations_.erase(entry);
+                uc_reg_write(uc, UC_X86_REG_RIP, &fallthrough);
+                return;
+            }
         }
     }
     else
