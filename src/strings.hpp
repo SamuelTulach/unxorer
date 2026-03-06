@@ -46,15 +46,13 @@ namespace strings
         while (first < len && is_trim_space(static_cast<unsigned char>(s[first])))
             ++first;
 
-        if (first != 0)
-            s.erase(0, first);
+        s.erase(0, first);
 
         size_t last = s.size();
         while (last > 0 && is_trim_space(static_cast<unsigned char>(s[last - 1])))
             --last;
 
-        if (last != s.size())
-            s.resize(last);
+        s.resize(last);
     }
 
     inline std::string escape_control_chars(std::string_view input)

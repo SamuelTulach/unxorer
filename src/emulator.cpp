@@ -57,7 +57,8 @@ void emulator::overwrite_all_registers(const uint64_t value) const
     {
         if (uc_reg_write(engine, reg, &value) != UC_ERR_OK)
         {
-            logger::debug("failed to overwrite register");
+            if (allow_ui_calls)
+                logger::debug("failed to overwrite register");
             break;
         }
     }
@@ -95,7 +96,8 @@ void emulator::dump_stack_strings()
 
     if (rsp < stack_base - stack_size || rsp >= stack_base)
     {
-        logger::debug("rsp {0:x} is out of stack bounds ({1:x} - {2:x})", rsp, stack_base - stack_size, stack_base);
+        if (allow_ui_calls)
+            logger::debug("rsp {0:x} is out of stack bounds ({1:x} - {2:x})", rsp, stack_base - stack_size, stack_base);
         return;
     }
 
@@ -162,7 +164,8 @@ bool emulator::schedule_branch(uc_engine* uc, const uint64_t from, const uint64_
     if (!branches_.save_branch(uc, target))
     {
         branches_.mark_visited(key);
-        logger::debug("failed to snapshot branch at {0:x}", target);
+        if (allow_ui_calls)
+            logger::debug("failed to snapshot branch at {0:x}", target);
         return false;
     }
 
@@ -317,7 +320,7 @@ void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
 bool emulator::is_external_thunk(const ea_t address) const
 {
     insn_t jump;
-    if (!decode_insn(&jump, address) || !instruction_classifier::contains(jump_types, jump.itype))
+    if (!try_get_insn(address, jump) || !instruction_classifier::contains(jump_types, jump.itype))
         return false;
 
     uint64_t target = 0;
@@ -359,12 +362,19 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
 {
     emulator* current = reinterpret_cast<emulator*>(user_data);
 
+    if (current->stop_requested_ != nullptr && current->stop_requested_->load(std::memory_order_relaxed))
+    {
+        uc_emu_stop(uc);
+        return;
+    }
+
     insn_t insn;
-    if (!decode_insn(&insn, address))
+    if (!current->try_get_insn(address, insn))
         return;
 
 #ifndef NDEBUG
-    current->print_disasm(address);
+    if (current->allow_ui_calls)
+        current->print_disasm(address);
 #endif
 
     ++counters::instructions_executed;
@@ -457,30 +467,49 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         current->force_branch(uc, insn);
 }
 
-bool emulator::hook_mem(uc_engine* uc, uc_mem_type, const uint64_t address, int, int64_t, void*)
+bool emulator::hook_mem(uc_engine* uc, uc_mem_type, const uint64_t address, int, int64_t, void* user_data)
 {
+    emulator* current = reinterpret_cast<emulator*>(user_data);
+
     uint64_t rip = 0;
     uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 
     size_t advance = 1;
     insn_t insn;
-    if (decode_insn(&insn, rip) && insn.size > 0)
+    if (current->try_get_insn(rip, insn) && insn.size > 0)
         advance = insn.size;
 
     const uint64_t next = rip + advance;
     uc_reg_write(uc, UC_X86_REG_RIP, &next);
-    logger::debug("skipped instruction {0:x} due to unmapped access at {1:x}", rip, address);
+
+    if (current->allow_ui_calls)
+        logger::debug("skipped instruction {0:x} due to unmapped access at {1:x}", rip, address);
+
     return true;
 }
 
-emulator::emulator()
+bool emulator::try_get_insn(const uint64_t address, insn_t& insn) const
 {
+    const auto it = instruction_snapshot_.decoded.find(address);
+    if (it == instruction_snapshot_.decoded.end())
+        return false;
+
+    insn = it->second;
+    return true;
+}
+
+emulator::emulator(const image_snapshot_t& image_snapshot, const instruction_snapshot_t& instruction_snapshot,
+                   const bool allow_ui)
+    : instruction_snapshot_(instruction_snapshot)
+{
+    allow_ui_calls = allow_ui;
     stack_buffer_.resize(stack_size);
 
     uc_err err = uc_open(UC_ARCH_X86, UC_MODE_64, &engine);
     if (err != UC_ERR_OK)
     {
-        logger::info("failed to initialize engine: {0}", uc_strerror(err));
+        if (allow_ui_calls)
+            logger::info("failed to initialize engine: {0}", uc_strerror(err));
         engine = nullptr;
         return;
     }
@@ -493,36 +522,38 @@ emulator::emulator()
         }
     };
 
-    constexpr uint64_t page_size = 0x1000;
-    constexpr uint64_t page_mask = ~(page_size - 1);
+    image_min_ = image_snapshot.image_min;
+    image_max_ = image_snapshot.image_max;
+    image_map_start_ = image_snapshot.map_start;
+    image_map_size_ = image_snapshot.map_size;
+    image_backup_ = image_snapshot.image_backup;
+    image_buffer_ = image_backup_;
 
-    image_min_ = inf_get_min_ea();
-    image_max_ = inf_get_max_ea();
-
-    const uint64_t map_start = image_min_ & page_mask;
-    const uint64_t map_end = (image_max_ + page_size - 1) & page_mask;
-
-    const size_t map_size = static_cast<size_t>(map_end - map_start);
-    const size_t image_size = static_cast<size_t>(image_max_ - image_min_);
-    const size_t image_offset = static_cast<size_t>(image_min_ - map_start);
-
-    image_buffer_.assign(map_size, 0);
-    image_backup_.assign(map_size, 0);
-
-    const ssize_t got = get_bytes(image_buffer_.data() + image_offset, image_size, image_min_, GMB_READALL);
-    if (got <= 0)
+    if (image_min_ == BADADDR || image_max_ == BADADDR || image_map_size_ == 0 || image_backup_.empty())
     {
-        logger::info("failed to read memory from {0:x} to {1:x}: {2}", image_min_, image_max_, got);
+        if (allow_ui_calls)
+            logger::info("invalid image snapshot");
         cleanup();
         return;
     }
 
-    image_backup_ = image_buffer_;
+    const size_t image_size = static_cast<size_t>(image_max_ - image_min_);
+    const size_t image_offset = static_cast<size_t>(image_min_ - image_map_start_);
+    const size_t required = image_offset + image_size;
+    if (required > image_buffer_.size())
+    {
+        if (allow_ui_calls)
+            logger::info("image snapshot size mismatch");
+        cleanup();
+        return;
+    }
 
-    err = uc_mem_map_ptr(engine, map_start, map_size, UC_PROT_ALL, image_buffer_.data());
+    err = uc_mem_map_ptr(engine, image_map_start_, image_map_size_, UC_PROT_ALL, image_buffer_.data());
     if (err != UC_ERR_OK)
     {
-        logger::info("failed to map image memory range {0:x} to {1:x}: {2}", image_min_, image_max_, uc_strerror(err));
+        if (allow_ui_calls)
+            logger::info("failed to map image memory range {0:x} to {1:x}: {2}", image_min_, image_max_,
+                         uc_strerror(err));
         cleanup();
         return;
     }
@@ -531,7 +562,8 @@ emulator::emulator()
         uc_mem_map_ptr(engine, stack_base - stack_size, stack_size, UC_PROT_READ | UC_PROT_WRITE, stack_buffer_.data());
     if (err != UC_ERR_OK)
     {
-        logger::info("failed to map stack: {0}", uc_strerror(err));
+        if (allow_ui_calls)
+            logger::info("failed to map stack: {0}", uc_strerror(err));
         cleanup();
         return;
     }
@@ -539,7 +571,8 @@ emulator::emulator()
     err = uc_hook_add(engine, &code_hook, UC_HOOK_CODE, reinterpret_cast<void*>(hook_code), this, 1, 0);
     if (err != UC_ERR_OK)
     {
-        logger::info("failed to install code hook: {0}", uc_strerror(err));
+        if (allow_ui_calls)
+            logger::info("failed to install code hook: {0}", uc_strerror(err));
         cleanup();
         return;
     }
@@ -548,7 +581,8 @@ emulator::emulator()
                       reinterpret_cast<void*>(hook_mem), this, 1, 0);
     if (err != UC_ERR_OK)
     {
-        logger::info("failed to install memory hook: {0}", uc_strerror(err));
+        if (allow_ui_calls)
+            logger::info("failed to install memory hook: {0}", uc_strerror(err));
         cleanup();
         return;
     }
@@ -568,12 +602,16 @@ const std::unordered_set<found_string_t, found_string_hash>& emulator::get_strin
     return string_list_;
 }
 
-void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr, const uint64_t max_loop_iterations)
+void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr, const uint64_t max_loop_iterations,
+                   const std::atomic_bool* stop_requested)
 {
     if (engine == nullptr)
         return;
 
-    logger::debug("starting emulation from {0:x}...", start);
+    stop_requested_ = stop_requested;
+
+    if (allow_ui_calls)
+        logger::debug("starting emulation from {0:x}...", start);
 
     branches_.clear();
     string_list_.clear();
@@ -600,6 +638,9 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
     uint64_t entry = start;
     for (;;)
     {
+        if (stop_requested_ != nullptr && stop_requested_->load(std::memory_order_relaxed))
+            break;
+
         if ((limit_time && remaining_time_us == 0) || (limit_instr && instructions_left == 0))
             break;
 
@@ -611,7 +652,7 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
         const uint64_t instr_before = counters::instructions_executed.load();
 
         const uc_err err = uc_emu_start(engine, entry, 0, time_slice, instr_slice);
-        if (err != UC_ERR_OK)
+        if (err != UC_ERR_OK && allow_ui_calls)
             logger::debug("emulation failure: {0}", uc_strerror(err));
 
         if (limit_instr)
@@ -635,10 +676,69 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
         auto state = branches_.take_next();
         if (uc_context_restore(engine, state.ctx.get()) != UC_ERR_OK)
         {
-            logger::debug("failed to restore branch context");
+            if (allow_ui_calls)
+                logger::debug("failed to restore branch context");
             break;
         }
 
         entry = state.pc;
     }
+
+    stop_requested_ = nullptr;
+}
+
+std::optional<emulator::image_snapshot_t> emulator::capture_image_snapshot()
+{
+    constexpr uint64_t page_size = 0x1000;
+    constexpr uint64_t page_mask = ~(page_size - 1);
+
+    const ea_t image_min = inf_get_min_ea();
+    const ea_t image_max = inf_get_max_ea();
+    if (image_min == BADADDR || image_max == BADADDR || image_max <= image_min)
+        return std::nullopt;
+
+    const uint64_t map_start = image_min & page_mask;
+    const uint64_t map_end = (image_max + page_size - 1) & page_mask;
+    const size_t map_size = static_cast<size_t>(map_end - map_start);
+    const size_t image_size = static_cast<size_t>(image_max - image_min);
+    const size_t image_offset = static_cast<size_t>(image_min - map_start);
+
+    image_snapshot_t snapshot;
+    snapshot.image_min = image_min;
+    snapshot.image_max = image_max;
+    snapshot.map_start = map_start;
+    snapshot.map_size = map_size;
+    snapshot.image_backup.assign(map_size, 0);
+
+    const ssize_t got = get_bytes(snapshot.image_backup.data() + image_offset, image_size, image_min, GMB_READALL);
+    if (got <= 0)
+        return std::nullopt;
+
+    return snapshot;
+}
+
+std::optional<emulator::instruction_snapshot_t> emulator::capture_instruction_snapshot(const ea_t image_min,
+                                                                                       const ea_t image_max)
+{
+    if (image_min == BADADDR || image_max == BADADDR || image_max <= image_min)
+        return std::nullopt;
+
+    instruction_snapshot_t snapshot;
+    const uint64_t image_size = image_max - image_min;
+    snapshot.decoded.reserve(static_cast<size_t>(image_size / 4));
+
+    for (ea_t ea = image_min; ea < image_max;)
+    {
+        insn_t insn;
+        if (!decode_insn(&insn, ea) || insn.size == 0)
+        {
+            ++ea;
+            continue;
+        }
+
+        snapshot.decoded.emplace(ea, insn);
+        ea += insn.size;
+    }
+
+    return snapshot;
 }

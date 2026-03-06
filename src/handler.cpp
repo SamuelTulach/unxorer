@@ -2,11 +2,6 @@
 
 namespace
 {
-    void handle_vmov(uc_engine* uc, const insn_t& insn)
-    {
-        vector_operations::vmov_operation(uc, insn);
-    }
-
     void handle_vpxor(uc_engine* uc, const insn_t& insn)
     {
         if (insn.Op1.type != o_reg || insn.Op2.type != o_reg)
@@ -56,7 +51,7 @@ void handler::handle(uc_engine* uc, const uint64_t address, const uint32_t size,
     {
     case NN_vmovdqu:
     case NN_vmovdqa:
-        handle_vmov(uc, insn);
+        vector_operations::vmov_operation(uc, insn);
         break;
 
     case NN_vpxor:

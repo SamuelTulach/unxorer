@@ -27,6 +27,21 @@ namespace counters
 
 class emulator
 {
+  public:
+    struct image_snapshot_t
+    {
+        ea_t image_min = BADADDR;
+        ea_t image_max = BADADDR;
+        uint64_t map_start = 0;
+        size_t map_size = 0;
+        std::vector<uint8_t> image_backup;
+    };
+
+    struct instruction_snapshot_t
+    {
+        std::unordered_map<uint64_t, insn_t> decoded;
+    };
+
   private:
     class branch_manager
     {
@@ -138,6 +153,8 @@ class emulator
 
     ea_t image_min_ = BADADDR;
     ea_t image_max_ = BADADDR;
+    uint64_t image_map_start_ = 0;
+    size_t image_map_size_ = 0;
     branch_manager branches_;
     std::unordered_set<found_string_t, found_string_hash> string_list_;
     std::unordered_map<uint64_t, loop_state> loop_iterations_;
@@ -146,6 +163,8 @@ class emulator
     std::vector<uint8_t> stack_buffer_;
     std::vector<uint8_t> image_buffer_;
     std::vector<uint8_t> image_backup_;
+    const instruction_snapshot_t& instruction_snapshot_;
+    const std::atomic_bool* stop_requested_ = nullptr;
 
     void overwrite_all_registers(uint64_t value) const;
     void print_disasm(ea_t address) const;
@@ -156,19 +175,26 @@ class emulator
     bool handle_call(uc_engine* uc, uint64_t address, uint32_t size, const insn_t& insn);
     bool schedule_branch(uc_engine* uc, uint64_t from, uint64_t target);
     void discover_indirect_targets(uc_engine* uc, uint64_t address, const insn_t& insn);
+    [[nodiscard]] bool try_get_insn(uint64_t address, insn_t& insn) const;
 
     static void hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
     static bool hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);
 
   public:
     bool should_update_dialog = true;
+    bool allow_ui_calls = true;
 
     [[nodiscard]] const std::unordered_set<found_string_t, found_string_hash>& get_string_list() const noexcept;
-    emulator();
+    emulator(const image_snapshot_t& image_snapshot, const instruction_snapshot_t& instruction_snapshot,
+             bool allow_ui_calls = true);
     ~emulator();
     [[nodiscard]] bool is_ready() const noexcept
     {
         return engine != nullptr;
     }
-    void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr, uint64_t max_loop_iterations);
+    void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr, uint64_t max_loop_iterations,
+             const std::atomic_bool* stop_requested = nullptr);
+
+    static std::optional<image_snapshot_t> capture_image_snapshot();
+    static std::optional<instruction_snapshot_t> capture_instruction_snapshot(ea_t image_min, ea_t image_max);
 };

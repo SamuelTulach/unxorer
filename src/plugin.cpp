@@ -16,16 +16,11 @@ struct emulation_config
     uval_t max_loop_iterations;
 };
 
-static bool initialize_emulator(emulator& emu, bool update_dialog)
+static size_t resolve_thread_count(size_t total_tasks)
 {
-    if (!emu.is_ready())
-    {
-        warning("Failed to initialize emulator");
-        return false;
-    }
-
-    emu.should_update_dialog = update_dialog;
-    return true;
+    const unsigned int hw = std::thread::hardware_concurrency();
+    const size_t preferred = (hw == 0) ? 4 : static_cast<size_t>(hw);
+    return std::max<size_t>(1, std::min(preferred, total_tasks));
 }
 
 static std::optional<emulation_config> get_user_config()
@@ -70,19 +65,24 @@ static std::optional<ea_t> resolve_single_start(emulation_scope scope)
     case emulation_scope::entry_point:
         return inf_get_start_ea();
 
-    case emulation_scope::every_function:
-        break;
+    default:
+        return std::nullopt;
     }
-
-    return std::nullopt;
 }
 
-static void run_on_function(ea_t start, const emulation_config& config)
+static void run_on_function(ea_t start, const emulation_config& config,
+                            const emulator::image_snapshot_t& image_snapshot,
+                            const emulator::instruction_snapshot_t& instruction_snapshot)
 {
-    emulator emu;
-    if (!initialize_emulator(emu, true))
+    emulator emu(image_snapshot, instruction_snapshot, true);
+    if (!emu.is_ready())
+    {
+        warning("Failed to initialize emulator");
         return;
+    }
 
+    emu.should_update_dialog = true;
+    replace_wait_box("Emulating function at 0x%llx", static_cast<unsigned long long>(start));
     emu.run(start, config.max_time_ms, config.max_instructions, config.max_loop_iterations);
     results::display(emu.get_string_list());
 }
@@ -102,7 +102,8 @@ static std::vector<ea_t> collect_function_starts()
     return starts;
 }
 
-static void run_on_all_functions(const emulation_config& config)
+static void run_on_all_functions(const emulation_config& config, const emulator::image_snapshot_t& image_snapshot,
+                                 const emulator::instruction_snapshot_t& instruction_snapshot)
 {
     const std::vector<ea_t> starts = collect_function_starts();
     if (starts.empty())
@@ -111,28 +112,78 @@ static void run_on_all_functions(const emulation_config& config)
         return;
     }
 
-    emulator emu;
-    if (!initialize_emulator(emu, false))
-        return;
-
     const size_t total = starts.size();
-    logger::info("running on {0} functions in database", total);
+    const size_t thread_count = resolve_thread_count(total);
+    logger::info("running on {0} functions in database using {1} threads", total, thread_count);
+
+    std::atomic<size_t> next_index = 0;
+    std::atomic<size_t> completed = 0;
+    std::atomic_bool stop_requested = false;
+
+    std::vector<std::unordered_set<found_string_t, found_string_hash>> partial_results(thread_count);
+    std::vector<std::thread> workers;
+    workers.reserve(thread_count);
+
+    for (size_t worker_id = 0; worker_id < thread_count; ++worker_id)
+    {
+        workers.emplace_back([&, worker_id]() {
+            emulator emu(image_snapshot, instruction_snapshot, false);
+            if (!emu.is_ready())
+            {
+                stop_requested.store(true, std::memory_order_relaxed);
+                return;
+            }
+
+            emu.should_update_dialog = false;
+
+            auto& local = partial_results[worker_id];
+            local.reserve(total / thread_count + 1);
+
+            for (;;)
+            {
+                if (stop_requested.load(std::memory_order_relaxed))
+                    break;
+
+                const size_t index = next_index.fetch_add(1, std::memory_order_relaxed);
+                if (index >= total)
+                    break;
+
+                emu.run(starts[index], config.max_time_ms, config.max_instructions, config.max_loop_iterations,
+                        &stop_requested);
+
+                const auto& found = emu.get_string_list();
+                local.insert(found.begin(), found.end());
+                completed.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    while (completed.load(std::memory_order_relaxed) < total)
+    {
+        if (stop_requested.load(std::memory_order_relaxed))
+            break;
+
+        const size_t done = completed.load(std::memory_order_relaxed);
+        replace_wait_box("Emulating %zu/%zu functions using %zu threads", done, total, thread_count);
+
+        if (user_cancelled())
+        {
+            stop_requested.store(true, std::memory_order_relaxed);
+            break;
+        }
+
+        qsleep(100);
+    }
+
+    for (auto& worker : workers)
+        worker.join();
 
     std::unordered_set<found_string_t, found_string_hash> aggregated;
     aggregated.reserve(total);
+    for (auto& partial : partial_results)
+        aggregated.insert(partial.begin(), partial.end());
 
-    for (size_t i = 0; i < total; ++i)
-    {
-        const ea_t start = starts[i];
-        replace_wait_box("Emulating function %zu/%zu at 0x%llx", i + 1, total, start);
-        emu.run(start, config.max_time_ms, config.max_instructions, config.max_loop_iterations);
-
-        const auto& found = emu.get_string_list();
-        aggregated.insert(found.begin(), found.end());
-
-        if (user_cancelled())
-            break;
-    }
+    replace_wait_box("Emulation finished using %zu threads", thread_count);
 
     results::display(aggregated);
 }
@@ -161,13 +212,31 @@ static bool idaapi run(size_t)
     counters::reset();
     show_wait_box("Initializing");
 
+    const auto image_snapshot = emulator::capture_image_snapshot();
+    if (!image_snapshot)
+    {
+        warning("Failed to capture image snapshot");
+        hide_wait_box();
+        return false;
+    }
+
+    replace_wait_box("Creating instruction cache");
+    const auto instruction_snapshot =
+        emulator::capture_instruction_snapshot(image_snapshot->image_min, image_snapshot->image_max);
+    if (!instruction_snapshot)
+    {
+        warning("Failed to build instruction snapshot");
+        hide_wait_box();
+        return false;
+    }
+
     if (config->scope == emulation_scope::every_function)
     {
-        run_on_all_functions(*config);
+        run_on_all_functions(*config, *image_snapshot, *instruction_snapshot);
     }
     else if (const auto start = resolve_single_start(config->scope); start.has_value())
     {
-        run_on_function(*start, *config);
+        run_on_function(*start, *config, *image_snapshot, *instruction_snapshot);
     }
 
     hide_wait_box();
