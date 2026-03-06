@@ -8,9 +8,16 @@ enum class emulation_scope
     entry_point
 };
 
+enum class scan_scope
+{
+    stack_only,
+    stack_and_registers
+};
+
 struct emulation_config
 {
     emulation_scope scope;
+    scan_scope scan;
     uval_t max_time_ms;
     uval_t max_instructions;
     uval_t max_loop_iterations;
@@ -32,20 +39,26 @@ static std::optional<emulation_config> get_user_config()
                                          "<#Current cursor location:R>\n"
                                          "<#Entry point                                          :R>>\n"
                                          "\n"
+                                         "Scan pointers:\n"
+                                         "<#Stack only:R>\n"
+                                         "<#Stack and registers                                  :R>>\n"
+                                         "\n"
                                          "Limits:\n"
                                          "<Max time (ms)                      : D:20:10::>\n"
                                          "<Max instructions (per function)    : D:20:10::>\n"
                                          "<Max loop iterations (per function) : D:20:10::>\n";
 
     int scope_val = 0;
+    int scan_val = 0;
     uval_t max_time = 60000;
     uval_t max_instr = 1000000;
     uval_t max_loops = 50;
 
-    if (!ask_form(form, &scope_val, &max_time, &max_instr, &max_loops))
+    if (!ask_form(form, &scope_val, &scan_val, &max_time, &max_instr, &max_loops))
         return std::nullopt;
 
-    return emulation_config{static_cast<emulation_scope>(scope_val), max_time, max_instr, max_loops};
+    return emulation_config{static_cast<emulation_scope>(scope_val), static_cast<scan_scope>(scan_val), max_time,
+                            max_instr, max_loops};
 }
 
 static std::optional<ea_t> resolve_single_start(emulation_scope scope)
@@ -83,7 +96,8 @@ static void run_on_function(ea_t start, const emulation_config& config,
 
     emu.should_update_dialog = true;
     replace_wait_box("Emulating function at 0x%llx", static_cast<unsigned long long>(start));
-    emu.run(start, config.max_time_ms, config.max_instructions, config.max_loop_iterations);
+    emu.run(start, config.max_time_ms, config.max_instructions, config.max_loop_iterations,
+            config.scan == scan_scope::stack_and_registers);
     results::display(emu.get_string_list());
 }
 
@@ -151,7 +165,7 @@ static void run_on_all_functions(const emulation_config& config, const emulator:
                     break;
 
                 emu.run(starts[index], config.max_time_ms, config.max_instructions, config.max_loop_iterations,
-                        &stop_requested);
+                        config.scan == scan_scope::stack_and_registers, &stop_requested);
 
                 if (emu.transient_limit_reached())
                 {

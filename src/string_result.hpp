@@ -3,7 +3,7 @@
 struct found_string_t
 {
     uint64_t rip = 0;
-    uint64_t rsp = 0;
+    uint64_t ptr = 0;
     size_t hash = 0;
     std::string data;
 

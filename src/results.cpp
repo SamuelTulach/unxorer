@@ -4,7 +4,7 @@ class results_chooser_t final : public chooser_t
 {
   protected:
     static constexpr int results_widths_[] = {16, 16, 32};
-    static constexpr const char* const results_headers_[] = {"rip", "rsp", "string"};
+    static constexpr const char* const results_headers_[] = {"rip", "ptr", "string"};
 
   private:
     std::vector<found_string_t> rows_;
@@ -33,7 +33,7 @@ class results_chooser_t final : public chooser_t
 
         const auto& row = rows_[n];
         (*cols)[0].sprnt("%016" PRIX64, row.rip);
-        (*cols)[1].sprnt("%016" PRIX64, row.rsp);
+        (*cols)[1].sprnt("%016" PRIX64, row.ptr);
         (*cols)[2].sprnt("%s", row.data.c_str());
     }
 

@@ -166,13 +166,16 @@ class emulator
     std::vector<uint64_t> transient_mappings_;
     bool transient_limit_reached_ = false;
     size_t transient_limit_hits_ = 0;
+    bool scan_register_strings_ = true;
     const instruction_snapshot_t& instruction_snapshot_;
     const std::atomic_bool* stop_requested_ = nullptr;
 
     void overwrite_all_registers(uint64_t value) const;
     void print_disasm(ea_t address) const;
-    void push_string(uint64_t rip, uint64_t rsp, std::string str);
+    void push_string(uint64_t rip, uint64_t ptr, std::string str);
+    void scan_buffer_for_strings(uint64_t rip, uint64_t base, const uint8_t* buffer, size_t scan_size);
     void dump_stack_strings();
+    void dump_register_strings();
     void force_branch(uc_engine* uc, const insn_t& insn) const;
     [[nodiscard]] bool is_external_thunk(ea_t ea) const;
     bool handle_call(uc_engine* uc, uint64_t address, uint32_t size, const insn_t& insn);
@@ -201,7 +204,7 @@ class emulator
         return engine != nullptr;
     }
     void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr, uint64_t max_loop_iterations,
-             const std::atomic_bool* stop_requested = nullptr);
+             bool scan_register_strings = true, const std::atomic_bool* stop_requested = nullptr);
     [[nodiscard]] bool transient_limit_reached() const noexcept
     {
         return transient_limit_reached_;

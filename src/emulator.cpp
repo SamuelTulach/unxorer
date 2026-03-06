@@ -16,6 +16,10 @@ namespace
     constexpr uint64_t transient_map_size = 0x1000ull;
     constexpr uint64_t transient_map_mask = ~(transient_map_size - 1ull);
     constexpr size_t max_transient_regions = 2048;
+    constexpr auto gpr_registers = std::to_array<int>({UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
+                                                       UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RBP, UC_X86_REG_RSP,
+                                                       UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_R10, UC_X86_REG_R11,
+                                                       UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15});
 
     bool is_inside_image(uint64_t address, ea_t image_min, ea_t image_max)
     {
@@ -52,12 +56,7 @@ namespace
 
 void emulator::overwrite_all_registers(const uint64_t value) const
 {
-    constexpr auto registers = std::to_array<int>({UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
-                                                   UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RBP, UC_X86_REG_RSP,
-                                                   UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_R10, UC_X86_REG_R11,
-                                                   UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15});
-
-    for (const int reg : registers)
+    for (const int reg : gpr_registers)
     {
         if (uc_reg_write(engine, reg, &value) != UC_ERR_OK)
         {
@@ -76,7 +75,7 @@ void emulator::print_disasm(const ea_t address) const
     logger::debug("{0:x}: {1}", address, line.c_str());
 }
 
-void emulator::push_string(const uint64_t rip, const uint64_t rsp, std::string str)
+void emulator::push_string(const uint64_t rip, const uint64_t ptr, std::string str)
 {
     if (str.empty())
         return;
@@ -87,7 +86,48 @@ void emulator::push_string(const uint64_t rip, const uint64_t rsp, std::string s
         return;
 
     const size_t hash = strings::hash_string(str);
-    string_list_.emplace(found_string_t{rip, rsp, hash, std::move(str)});
+    string_list_.emplace(found_string_t{rip, ptr, hash, std::move(str)});
+}
+
+void emulator::scan_buffer_for_strings(const uint64_t rip, const uint64_t base, const uint8_t* buffer,
+                                       const size_t scan_size)
+{
+    for (size_t i = 0; i < scan_size;)
+    {
+        if (strings::is_ascii_printable(buffer[i]))
+        {
+            size_t end = i;
+            while (end < scan_size && strings::is_ascii_printable(buffer[end]))
+                ++end;
+
+            if (end - i >= 4 && end < scan_size && buffer[end] == 0)
+            {
+                std::string candidate(reinterpret_cast<const char*>(buffer + i), end - i);
+                push_string(rip, base + i, std::move(candidate));
+            }
+
+            i = end + 1;
+            continue;
+        }
+
+        if (i + 1 < scan_size && strings::is_utf16_printable(read_u16le(buffer + i)))
+        {
+            size_t end = i;
+            while (end + 1 < scan_size && strings::is_utf16_printable(read_u16le(buffer + end)))
+                end += 2;
+
+            if ((end - i) / 2 >= 4 && end + 1 < scan_size && buffer[end] == 0 && buffer[end + 1] == 0)
+            {
+                std::string candidate = strings::utf16le_to_ascii(buffer + i, (end - i) / 2);
+                push_string(rip, base + i, std::move(candidate));
+            }
+
+            i = end + 2;
+            continue;
+        }
+
+        ++i;
+    }
 }
 
 void emulator::dump_stack_strings()
@@ -112,41 +152,46 @@ void emulator::dump_stack_strings()
     const size_t offset = static_cast<size_t>(rsp - stack_begin);
     const uint8_t* buffer = stack_buffer_.data() + offset;
 
-    for (size_t i = 0; i < scan_size;)
+    scan_buffer_for_strings(rip, rsp, buffer, scan_size);
+}
+
+void emulator::dump_register_strings()
+{
+    uint64_t rip = 0;
+    uc_reg_read(engine, UC_X86_REG_RIP, &rip);
+
+    constexpr size_t register_scan_size = 0x200;
+    std::array<uint8_t, register_scan_size> buffer{};
+    std::array<uint64_t, gpr_registers.size()> scanned{};
+    size_t scanned_count = 0;
+
+    for (const int reg : gpr_registers)
     {
-        if (strings::is_ascii_printable(buffer[i]))
-        {
-            size_t end = i;
-            while (end < scan_size && strings::is_ascii_printable(buffer[end]))
-                ++end;
-
-            if (end - i >= 4 && end < scan_size && buffer[end] == 0)
-            {
-                std::string candidate(reinterpret_cast<const char*>(buffer + i), end - i);
-                push_string(rip, rsp + i, std::move(candidate));
-            }
-
-            i = end + 1;
+        if (reg == UC_X86_REG_RSP)
             continue;
-        }
 
-        if (i + 1 < scan_size && strings::is_utf16_printable(read_u16le(buffer + i)))
-        {
-            size_t end = i;
-            while (end + 1 < scan_size && strings::is_utf16_printable(read_u16le(buffer + end)))
-                end += 2;
-
-            if ((end - i) / 2 >= 4 && end + 1 < scan_size && buffer[end] == 0 && buffer[end + 1] == 0)
-            {
-                std::string candidate = strings::utf16le_to_ascii(buffer + i, (end - i) / 2);
-                push_string(rip, rsp + i, std::move(candidate));
-            }
-
-            i = end + 2;
+        uint64_t ptr = 0;
+        if (uc_reg_read(engine, reg, &ptr) != UC_ERR_OK || ptr == 0)
             continue;
-        }
 
-        ++i;
+        bool already_scanned = false;
+        for (size_t i = 0; i < scanned_count; ++i)
+        {
+            if (scanned[i] == ptr)
+            {
+                already_scanned = true;
+                break;
+            }
+        }
+        if (already_scanned)
+            continue;
+
+        scanned[scanned_count++] = ptr;
+
+        if (uc_mem_read(engine, ptr, buffer.data(), buffer.size()) != UC_ERR_OK)
+            continue;
+
+        scan_buffer_for_strings(rip, ptr, buffer.data(), buffer.size());
     }
 }
 
@@ -403,7 +448,11 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
     }
 
     if (instruction_classifier::should_dump(insn.itype))
+    {
         current->dump_stack_strings();
+        if (current->scan_register_strings_)
+            current->dump_register_strings();
+    }
 
     if (instruction_classifier::should_handle(insn.itype))
     {
@@ -665,11 +714,12 @@ const std::unordered_set<found_string_t, found_string_hash>& emulator::get_strin
 }
 
 void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_instr, const uint64_t max_loop_iterations,
-                   const std::atomic_bool* stop_requested)
+                   const bool scan_register_strings, const std::atomic_bool* stop_requested)
 {
     if (engine == nullptr)
         return;
 
+    scan_register_strings_ = scan_register_strings;
     stop_requested_ = stop_requested;
 
     if (allow_ui_calls)
