@@ -5,17 +5,26 @@ namespace logger
 {
     constexpr const char* prefix = "[unxorer]";
 
+    template <typename... Args> inline std::string format_line(fmt::format_string<Args...> fmtstr, Args&&... args)
+    {
+        return fmt::format("{} {}\n", prefix, fmt::format(fmtstr, std::forward<Args>(args)...));
+    }
+
+    inline void emit(const std::string& line)
+    {
+        msg("%s", line.c_str());
+    }
+
     template <typename... Args> inline void info(fmt::format_string<Args...> fmtstr, Args&&... args)
     {
-        auto line = fmt::format("{} {}\n", prefix, fmt::format(fmtstr, std::forward<Args>(args)...));
-        msg("%s", line.c_str());
+        emit(format_line(fmtstr, std::forward<Args>(args)...));
     }
 
     template <typename... Args> inline void debug(fmt::format_string<Args...> fmtstr, Args&&... args)
     {
 #ifndef NDEBUG
-        auto line = fmt::format("{} {}\n", prefix, fmt::format(fmtstr, std::forward<Args>(args)...));
-        msg("%s", line.c_str());
+        const std::string line = format_line(fmtstr, std::forward<Args>(args)...);
+        emit(line);
         console::print(line);
 #endif
     }

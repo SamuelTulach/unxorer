@@ -1,13 +1,59 @@
 #include "global.hpp"
 
+namespace
+{
+    constexpr auto call_types = std::to_array<int>({NN_call, NN_callfi, NN_callni});
+    constexpr auto jump_types = std::to_array<int>({NN_jmp, NN_jmpfi, NN_jmpni});
+    constexpr auto indirect_control_types =
+        std::to_array<int>({NN_jmp, NN_jmpfi, NN_jmpni, NN_call, NN_callfi, NN_callni});
+
+    constexpr uint64_t flag_cf = 0x00000001ull;
+    constexpr uint64_t flag_pf = 0x00000004ull;
+    constexpr uint64_t flag_zf = 0x00000040ull;
+    constexpr uint64_t flag_sf = 0x00000080ull;
+    constexpr uint64_t flag_of = 0x00000800ull;
+
+    bool is_inside_image(uint64_t address, ea_t image_min, ea_t image_max)
+    {
+        return address >= image_min && address < image_max;
+    }
+
+    bool resolve_operand_target(uc_engine* uc, const op_t& op, uint64_t& target)
+    {
+        switch (op.type)
+        {
+        case o_near:
+        case o_far:
+            target = op.addr;
+            return true;
+
+        case o_mem:
+            return uc_mem_read(uc, op.addr, &target, sizeof(target)) == UC_ERR_OK;
+
+        case o_displ: {
+            const uint64_t mem_addr = vector_operations::calculate_effective_address(uc, op);
+            return uc_mem_read(uc, mem_addr, &target, sizeof(target)) == UC_ERR_OK;
+        }
+
+        default:
+            return false;
+        }
+    }
+
+    uint16_t read_u16le(const uint8_t* data)
+    {
+        return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+    }
+}
+
 void emulator::overwrite_all_registers(const uint64_t value) const
 {
-    constexpr int registers[] = {UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
-                                 UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RBP, UC_X86_REG_RSP,
-                                 UC_X86_REG_R8,  UC_X86_REG_R9,  UC_X86_REG_R10, UC_X86_REG_R11,
-                                 UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15};
+    constexpr auto registers = std::to_array<int>({UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
+                                                   UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RBP, UC_X86_REG_RSP,
+                                                   UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_R10, UC_X86_REG_R11,
+                                                   UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15});
 
-    for (const auto reg : registers)
+    for (const int reg : registers)
     {
         if (uc_reg_write(engine, reg, &value) != UC_ERR_OK)
         {
@@ -30,47 +76,13 @@ void emulator::push_string(const uint64_t rip, const uint64_t rsp, std::string s
     if (str.empty())
         return;
 
-    std::string escaped;
-    escaped.reserve(str.size());
-
-    for (const unsigned char c : str)
-    {
-        switch (c)
-        {
-        case '\n':
-            escaped += "\\n";
-            break;
-        case '\r':
-            escaped += "\\r";
-            break;
-        case '\t':
-            escaped += "\\t";
-            break;
-        case '\v':
-            escaped += "\\v";
-            break;
-        case '\f':
-            escaped += "\\f";
-            break;
-        case '\a':
-            escaped += "\\a";
-            break;
-        case '\b':
-            escaped += "\\b";
-            break;
-        default:
-            escaped += static_cast<char>(c);
-        }
-    }
-
-    strings::left_trim(escaped);
-    strings::right_trim(escaped);
-
-    if (escaped.empty())
+    str = strings::escape_control_chars(str);
+    strings::trim(str);
+    if (str.empty())
         return;
 
-    const size_t hash = strings::hash_string(escaped);
-    string_list_.emplace(found_string_t{rip, rsp, hash, std::move(escaped)});
+    const size_t hash = strings::hash_string(str);
+    string_list_.emplace(found_string_t{rip, rsp, hash, std::move(str)});
 }
 
 void emulator::dump_stack_strings()
@@ -88,51 +100,43 @@ void emulator::dump_stack_strings()
     }
 
     constexpr size_t max_scan = 0x8000;
-    const size_t scan_sz = std::min(static_cast<size_t>(stack_base - rsp), max_scan);
-    if (scan_sz == 0)
-        return;
+    const size_t scan_size = std::min(static_cast<size_t>(stack_base - rsp), max_scan);
 
     const uint64_t stack_begin = stack_base - stack_size;
     const size_t offset = static_cast<size_t>(rsp - stack_begin);
-    if (offset >= stack_buffer_.size())
-        return;
+    const uint8_t* buffer = stack_buffer_.data() + offset;
 
-    if (offset + scan_sz > stack_buffer_.size())
-        return;
-
-    uint8_t* buffer = stack_buffer_.data() + offset;
-
-    for (size_t i = 0; i < scan_sz;)
+    for (size_t i = 0; i < scan_size;)
     {
         if (strings::is_ascii_printable(buffer[i]))
         {
-            size_t j = i;
-            while (j < scan_sz && strings::is_ascii_printable(buffer[j]))
-                ++j;
+            size_t end = i;
+            while (end < scan_size && strings::is_ascii_printable(buffer[end]))
+                ++end;
 
-            if (j - i >= 4 && j < scan_sz && buffer[j] == 0)
+            if (end - i >= 4 && end < scan_size && buffer[end] == 0)
             {
-                std::string s(reinterpret_cast<const char*>(buffer + i), j - i);
-                push_string(rip, rsp - (i + 1), std::move(s));
+                std::string candidate(reinterpret_cast<const char*>(buffer + i), end - i);
+                push_string(rip, rsp + i, std::move(candidate));
             }
 
-            i = j + 1;
+            i = end + 1;
             continue;
         }
 
-        if (i + 3 < scan_sz && strings::is_utf16_printable(*reinterpret_cast<const uint16_t*>(buffer + i)))
+        if (i + 1 < scan_size && strings::is_utf16_printable(read_u16le(buffer + i)))
         {
-            size_t j = i;
-            while (j + 1 < scan_sz && strings::is_utf16_printable(*reinterpret_cast<const uint16_t*>(buffer + j)))
-                j += 2;
+            size_t end = i;
+            while (end + 1 < scan_size && strings::is_utf16_printable(read_u16le(buffer + end)))
+                end += 2;
 
-            if ((j - i) / 2 >= 4 && j + 1 < scan_sz && buffer[j] == 0 && buffer[j + 1] == 0)
+            if ((end - i) / 2 >= 4 && end + 1 < scan_size && buffer[end] == 0 && buffer[end + 1] == 0)
             {
-                std::string s = strings::utf16le_to_ascii(buffer + i, (j - i) / 2);
-                push_string(rip, rsp - (i + 2), std::move(s));
+                std::string candidate = strings::utf16le_to_ascii(buffer + i, (end - i) / 2);
+                push_string(rip, rsp + i, std::move(candidate));
             }
 
-            i = j + 2;
+            i = end + 2;
             continue;
         }
 
@@ -149,15 +153,19 @@ bool emulator::schedule_branch(uc_engine* uc, const uint64_t from, const uint64_
         return false;
     }
 
-    const ea_t img_min = inf_get_min_ea();
-    const ea_t img_max = inf_get_max_ea();
-    if (target < img_min || target >= img_max)
+    if (!is_inside_image(target, image_min_, image_max_))
     {
         branches_.mark_visited(key);
         return false;
     }
 
-    branches_.save_branch(uc, target);
+    if (!branches_.save_branch(uc, target))
+    {
+        branches_.mark_visited(key);
+        logger::debug("failed to snapshot branch at {0:x}", target);
+        return false;
+    }
+
     branches_.mark_visited(key);
     ++counters::branched;
     return true;
@@ -165,38 +173,19 @@ bool emulator::schedule_branch(uc_engine* uc, const uint64_t from, const uint64_
 
 void emulator::discover_indirect_targets(uc_engine* uc, const uint64_t address, const insn_t& insn)
 {
-    constexpr int indirect_types[] = {NN_jmp, NN_jmpfi, NN_jmpni, NN_call, NN_callfi, NN_callni};
-    bool relevant = false;
-    for (const auto type : indirect_types)
-    {
-        if (type == insn.itype)
-        {
-            relevant = true;
-            break;
-        }
-    }
-
-    if (!relevant)
+    if (!instruction_classifier::contains(indirect_control_types, insn.itype))
         return;
 
     if (insn.Op1.type != o_mem && insn.Op1.type != o_displ)
         return;
 
-    uint64_t dest = 0;
-    if (uc_mem_read(uc, insn.Op1.addr, &dest, sizeof(dest)) != UC_ERR_OK)
-        return;
-
-    schedule_branch(uc, address, dest);
+    uint64_t target = 0;
+    if (resolve_operand_target(uc, insn.Op1, target))
+        schedule_branch(uc, address, target);
 }
 
 void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
 {
-    constexpr uint64_t f_cf = 0x00000001ull;
-    constexpr uint64_t f_pf = 0x00000004ull;
-    constexpr uint64_t f_zf = 0x00000040ull;
-    constexpr uint64_t f_sf = 0x00000080ull;
-    constexpr uint64_t f_of = 0x00000800ull;
-
     uint64_t eflags = 0;
     uc_reg_read(uc, UC_X86_REG_EFLAGS, &eflags);
 
@@ -210,14 +199,14 @@ void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
     case NN_cmovz:
     case NN_sete:
     case NN_setz:
-        set(f_zf);
+        set(flag_zf);
         break;
     case NN_jnz:
     case NN_jne:
     case NN_cmovnz:
     case NN_setne:
     case NN_setnz:
-        clear(f_zf);
+        clear(flag_zf);
         break;
 
     case NN_jc:
@@ -226,94 +215,94 @@ void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
     case NN_cmovb:
     case NN_setb:
     case NN_setc:
-        set(f_cf);
+        set(flag_cf);
         break;
     case NN_jnc:
     case NN_jnb:
     case NN_jae:
     case NN_setae:
-        clear(f_cf);
+        clear(flag_cf);
         break;
 
     case NN_js:
     case NN_cmovs:
     case NN_sets:
-        set(f_sf);
+        set(flag_sf);
         break;
     case NN_jns:
     case NN_cmovns:
     case NN_setns:
-        clear(f_sf);
+        clear(flag_sf);
         break;
 
     case NN_jo:
     case NN_cmovo:
     case NN_seto:
-        set(f_of);
+        set(flag_of);
         break;
     case NN_jno:
     case NN_cmovno:
     case NN_setno:
-        clear(f_of);
+        clear(flag_of);
         break;
 
     case NN_jp:
     case NN_jpe:
     case NN_cmovp:
     case NN_setp:
-        set(f_pf);
+        set(flag_pf);
         break;
     case NN_jnp:
     case NN_jpo:
     case NN_cmovnp:
     case NN_setnp:
     case NN_setpo:
-        clear(f_pf);
+        clear(flag_pf);
         break;
 
     case NN_ja:
     case NN_jnbe:
     case NN_cmova:
     case NN_seta:
-        clear(f_cf | f_zf);
+        clear(flag_cf | flag_zf);
         break;
     case NN_jbe:
     case NN_jna:
     case NN_cmovbe:
     case NN_setbe:
-        set(f_cf);
+        set(flag_cf);
         break;
 
     case NN_jg:
     case NN_jnle:
     case NN_cmovg:
     case NN_setg:
-        clear(f_zf | f_sf | f_of);
+        clear(flag_zf | flag_sf | flag_of);
         break;
     case NN_jge:
     case NN_jnl:
     case NN_cmovge:
     case NN_setge:
-        clear(f_sf | f_of);
+        clear(flag_sf | flag_of);
         break;
     case NN_jl:
     case NN_jnge:
     case NN_cmovl:
     case NN_setl:
-        set(f_sf);
-        clear(f_of);
+        set(flag_sf);
+        clear(flag_of);
         break;
     case NN_jle:
     case NN_jng:
     case NN_cmovle:
     case NN_setle:
-        set(f_zf);
+        set(flag_zf);
         break;
 
     case NN_jcxz:
     case NN_jecxz:
     case NN_jrcxz: {
-        const uint64_t rcx = 0;
+        constexpr uint64_t rcx = 0;
         uc_reg_write(uc, UC_X86_REG_RCX, &rcx);
     }
     break;
@@ -325,78 +314,29 @@ void emulator::force_branch(uc_engine* uc, const insn_t& insn) const
     uc_reg_write(uc, UC_X86_REG_EFLAGS, &eflags);
 }
 
-bool emulator::is_external_thunk(const ea_t ea) const
+bool emulator::is_external_thunk(const ea_t address) const
 {
-    insn_t jmp;
-    if (!decode_insn(&jmp, ea))
+    insn_t jump;
+    if (!decode_insn(&jump, address) || !instruction_classifier::contains(jump_types, jump.itype))
         return false;
 
-    constexpr std::array jmp_types = {NN_jmp, NN_jmpfi, NN_jmpni};
-    const bool is_jmp = std::any_of(jmp_types.begin(), jmp_types.end(),
-                                    [&jmp](const int type) { return std::cmp_equal(jmp.itype, type); });
-    if (!is_jmp)
+    uint64_t target = 0;
+    if (!resolve_operand_target(engine, jump.Op1, target))
         return false;
 
-    const ea_t img_min = inf_get_min_ea();
-    const ea_t img_max = inf_get_max_ea();
-
-    uint64_t final = 0;
-    bool have_final = false;
-
-    switch (jmp.Op1.type)
-    {
-    case o_near:
-    case o_far:
-        final = jmp.Op1.addr;
-        have_final = true;
-        break;
-
-    case o_mem:
-    case o_displ:
-        if (uc_mem_read(engine, jmp.Op1.addr, &final, sizeof(final)) == UC_ERR_OK)
-            have_final = true;
-        break;
-
-    default:
-        break;
-    }
-
-    return have_final && (final < img_min || final >= img_max);
+    return !is_inside_image(target, image_min_, image_max_);
 }
 
 bool emulator::handle_call(uc_engine* uc, const uint64_t address, const uint32_t size, const insn_t& insn)
 {
-    if (insn.itype != NN_call && insn.itype != NN_callfi && insn.itype != NN_callni)
+    if (!instruction_classifier::contains(call_types, insn.itype))
         return false;
 
-    const ea_t img_min = inf_get_min_ea();
-    const ea_t img_max = inf_get_max_ea();
+    uint64_t target = 0;
+    const bool has_target = resolve_operand_target(uc, insn.Op1, target);
+    bool external = has_target && !is_inside_image(target, image_min_, image_max_);
 
-    uint64_t dest = 0;
-    bool have_dest = false;
-
-    switch (insn.Op1.type)
-    {
-    case o_near:
-    case o_far:
-        dest = insn.Op1.addr;
-        have_dest = true;
-        break;
-
-    case o_mem:
-    case o_displ: {
-        const uint64_t ptr_addr = insn.Op1.addr;
-        if (uc_mem_read(uc, ptr_addr, &dest, sizeof(dest)) == UC_ERR_OK)
-            have_dest = true;
-        break;
-    }
-
-    default:
-        break;
-    }
-
-    bool external = have_dest && (dest < img_min || dest >= img_max);
-    if (!external && have_dest && is_external_thunk(dest))
+    if (!external && has_target && is_external_thunk(target))
     {
         ++counters::import_thunks;
         external = true;
@@ -405,11 +345,11 @@ bool emulator::handle_call(uc_engine* uc, const uint64_t address, const uint32_t
     if (!external)
         return false;
 
-    const uint64_t new_rip = address + size;
-    uc_reg_write(uc, UC_X86_REG_RIP, &new_rip);
+    const uint64_t return_address = address + size;
+    uc_reg_write(uc, UC_X86_REG_RIP, &return_address);
 
-    constexpr uint64_t zero = 0;
-    uc_reg_write(uc, UC_X86_REG_RAX, &zero);
+    constexpr uint64_t return_value = 0;
+    uc_reg_write(uc, UC_X86_REG_RAX, &return_value);
 
     ++counters::external_calls;
     return true;
@@ -434,7 +374,7 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         const auto now = std::chrono::high_resolution_clock::now();
         if (now >= current->next_waitbox_update)
         {
-            size_t executed = counters::instructions_executed.load();
+            const size_t executed = counters::instructions_executed.load();
             replace_wait_box("Emulating at 0x%a, executed %zu instructions", address, executed);
             current->next_waitbox_update = now + std::chrono::seconds(1);
         }
@@ -442,8 +382,8 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
 
     if (instruction_classifier::should_skip(insn.itype))
     {
-        const uint64_t rip = address + size;
-        uc_reg_write(uc, UC_X86_REG_RIP, &rip);
+        const uint64_t next = address + size;
+        uc_reg_write(uc, UC_X86_REG_RIP, &next);
         ++counters::skipped;
         return;
     }
@@ -465,8 +405,7 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
     if (!instruction_classifier::is_conditional(insn.itype))
         return;
 
-    const bool is_branch = instruction_classifier::is_branch(insn.itype);
-    if (!is_branch)
+    if (!instruction_classifier::is_branch(insn.itype))
     {
         current->force_branch(uc, insn);
         return;
@@ -474,7 +413,6 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
 
     const uint64_t taken = insn.Op1.addr;
     const uint64_t fallthrough = address + size;
-
     current->schedule_branch(uc, address, fallthrough);
 
     if (taken <= address)
@@ -485,7 +423,7 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         }
         else
         {
-            auto [entry, inserted] = current->loop_iterations_.try_emplace(address, emulator::loop_state{0, taken});
+            auto entry = current->loop_iterations_.try_emplace(address, emulator::loop_state{0, taken}).first;
             auto& state = entry->second;
             if (state.last_target != taken)
             {
@@ -519,8 +457,7 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         current->force_branch(uc, insn);
 }
 
-bool emulator::hook_mem(uc_engine* uc, uc_mem_type type, const uint64_t address, int size, int64_t value,
-                        void* user_data)
+bool emulator::hook_mem(uc_engine* uc, uc_mem_type, const uint64_t address, int, int64_t, void*)
 {
     uint64_t rip = 0;
     uc_reg_read(uc, UC_X86_REG_RIP, &rip);
@@ -559,22 +496,23 @@ emulator::emulator()
     constexpr uint64_t page_size = 0x1000;
     constexpr uint64_t page_mask = ~(page_size - 1);
 
-    const ea_t img_min = inf_get_min_ea();
-    const ea_t img_max = inf_get_max_ea();
+    image_min_ = inf_get_min_ea();
+    image_max_ = inf_get_max_ea();
 
-    const uint64_t map_start = img_min & page_mask;
-    const uint64_t map_end = (img_max + page_size - 1) & page_mask;
-    const size_t map_size = map_end - map_start;
-    const size_t image_size = img_max - img_min;
-    const size_t image_offset = static_cast<size_t>(img_min - map_start);
+    const uint64_t map_start = image_min_ & page_mask;
+    const uint64_t map_end = (image_max_ + page_size - 1) & page_mask;
+
+    const size_t map_size = static_cast<size_t>(map_end - map_start);
+    const size_t image_size = static_cast<size_t>(image_max_ - image_min_);
+    const size_t image_offset = static_cast<size_t>(image_min_ - map_start);
 
     image_buffer_.assign(map_size, 0);
     image_backup_.assign(map_size, 0);
 
-    const ssize_t got = get_bytes(image_buffer_.data() + image_offset, image_size, img_min, GMB_READALL);
+    const ssize_t got = get_bytes(image_buffer_.data() + image_offset, image_size, image_min_, GMB_READALL);
     if (got <= 0)
     {
-        logger::info("failed to read memory from {0:x} to {1:x}: {2}", img_min, img_max, got);
+        logger::info("failed to read memory from {0:x} to {1:x}: {2}", image_min_, image_max_, got);
         cleanup();
         return;
     }
@@ -584,7 +522,7 @@ emulator::emulator()
     err = uc_mem_map_ptr(engine, map_start, map_size, UC_PROT_ALL, image_buffer_.data());
     if (err != UC_ERR_OK)
     {
-        logger::info("failed to map image memory range {0:x} to {1:x}: {2}", img_min, img_max, uc_strerror(err));
+        logger::info("failed to map image memory range {0:x} to {1:x}: {2}", image_min_, image_max_, uc_strerror(err));
         cleanup();
         return;
     }
@@ -598,9 +536,22 @@ emulator::emulator()
         return;
     }
 
-    uc_hook_add(engine, &code_hook, UC_HOOK_CODE, reinterpret_cast<void*>(hook_code), this, 1, 0);
-    uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED,
-                reinterpret_cast<void*>(hook_mem), this, 1, 0);
+    err = uc_hook_add(engine, &code_hook, UC_HOOK_CODE, reinterpret_cast<void*>(hook_code), this, 1, 0);
+    if (err != UC_ERR_OK)
+    {
+        logger::info("failed to install code hook: {0}", uc_strerror(err));
+        cleanup();
+        return;
+    }
+
+    err = uc_hook_add(engine, &mem_hook, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED,
+                      reinterpret_cast<void*>(hook_mem), this, 1, 0);
+    if (err != UC_ERR_OK)
+    {
+        logger::info("failed to install memory hook: {0}", uc_strerror(err));
+        cleanup();
+        return;
+    }
 }
 
 emulator::~emulator()
@@ -630,16 +581,14 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
     loop_iteration_limit = max_loop_iterations;
     next_waitbox_update = std::chrono::high_resolution_clock::now();
 
-    if (!image_backup_.empty())
-        std::copy(image_backup_.begin(), image_backup_.end(), image_buffer_.begin());
-
-    if (!stack_buffer_.empty())
-        std::fill(stack_buffer_.begin(), stack_buffer_.end(), 0);
+    std::copy(image_backup_.begin(), image_backup_.end(), image_buffer_.begin());
+    std::fill(stack_buffer_.begin(), stack_buffer_.end(), 0);
 
     if (!counters::start_time.load().has_value())
         counters::start_time.store(std::chrono::high_resolution_clock::now());
 
     overwrite_all_registers(0x2000);
+
     const uint64_t initial_rsp = stack_base - 0x1000;
     uc_reg_write(engine, UC_X86_REG_RSP, &initial_rsp);
 
@@ -649,13 +598,9 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
     uint64_t instructions_left = max_instr;
 
     uint64_t entry = start;
-
     for (;;)
     {
-        if (limit_time && remaining_time_us == 0)
-            break;
-
-        if (limit_instr && instructions_left == 0)
+        if ((limit_time && remaining_time_us == 0) || (limit_instr && instructions_left == 0))
             break;
 
         uc_reg_write(engine, UC_X86_REG_RIP, &entry);
@@ -672,30 +617,28 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
         if (limit_instr)
         {
             const uint64_t instr_after = counters::instructions_executed.load();
-            const uint64_t delta = instr_after >= instr_before ? instr_after - instr_before : 0;
-            if (delta >= instructions_left)
-                instructions_left = 0;
-            else
-                instructions_left -= delta;
+            const uint64_t delta = instr_after - instr_before;
+            instructions_left = (delta >= instructions_left) ? 0 : instructions_left - delta;
         }
 
         if (limit_time)
         {
-            const auto slice_end = std::chrono::high_resolution_clock::now();
-            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(slice_end - slice_begin);
-            const int64_t elapsed_count = elapsed.count();
-            const uint64_t elapsed_us = elapsed_count <= 0 ? 0 : static_cast<uint64_t>(elapsed_count);
-            if (elapsed_us >= remaining_time_us)
-                remaining_time_us = 0;
-            else
-                remaining_time_us -= elapsed_us;
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::high_resolution_clock::now() - slice_begin);
+            const uint64_t elapsed_us = static_cast<uint64_t>(elapsed.count());
+            remaining_time_us = (elapsed_us >= remaining_time_us) ? 0 : remaining_time_us - elapsed_us;
         }
 
         if (!branches_.has_pending())
             break;
 
-        const auto state = branches_.take_next();
-        uc_context_restore(engine, state.ctx);
+        auto state = branches_.take_next();
+        if (uc_context_restore(engine, state.ctx.get()) != UC_ERR_OK)
+        {
+            logger::debug("failed to restore branch context");
+            break;
+        }
+
         entry = state.pc;
     }
 }

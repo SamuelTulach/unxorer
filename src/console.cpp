@@ -1,15 +1,21 @@
-#ifdef _WIN32
-#include <Windows.h>
+#include "global.hpp"
+
+#if defined(_WIN32)
+extern "C" FILE* __cdecl __acrt_iob_func(unsigned index);
 #endif
-#include <iostream>
-#include "console.hpp"
 
 void console::init()
 {
 #ifdef _WIN32
     AllocConsole();
-    freopen_s(reinterpret_cast<FILE**>(stdin), "CONIN$", "r", stdin);
-    freopen_s(reinterpret_cast<FILE**>(stdout), "CONOUT$", "w", stdout);
+
+    FILE* in_file = nullptr;
+    FILE* out_file = nullptr;
+    FILE* in_stream = __acrt_iob_func(0);
+    FILE* out_stream = __acrt_iob_func(1);
+
+    freopen_s(&in_file, "CONIN$", "r", in_stream);
+    freopen_s(&out_file, "CONOUT$", "w", out_stream);
 #endif
 }
 

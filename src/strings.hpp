@@ -39,7 +39,7 @@ namespace strings
         return out;
     }
 
-    inline void left_trim(std::string& s)
+    inline void trim(std::string& s)
     {
         size_t first = 0;
         const size_t len = s.size();
@@ -48,16 +48,51 @@ namespace strings
 
         if (first != 0)
             s.erase(0, first);
-    }
 
-    inline void right_trim(std::string& s)
-    {
         size_t last = s.size();
         while (last > 0 && is_trim_space(static_cast<unsigned char>(s[last - 1])))
             --last;
 
         if (last != s.size())
             s.resize(last);
+    }
+
+    inline std::string escape_control_chars(std::string_view input)
+    {
+        std::string escaped;
+        escaped.reserve(input.size());
+
+        for (const unsigned char c : input)
+        {
+            switch (c)
+            {
+            case '\n':
+                escaped += "\\n";
+                break;
+            case '\r':
+                escaped += "\\r";
+                break;
+            case '\t':
+                escaped += "\\t";
+                break;
+            case '\v':
+                escaped += "\\v";
+                break;
+            case '\f':
+                escaped += "\\f";
+                break;
+            case '\a':
+                escaped += "\\a";
+                break;
+            case '\b':
+                escaped += "\\b";
+                break;
+            default:
+                escaped += static_cast<char>(c);
+            }
+        }
+
+        return escaped;
     }
 
     inline size_t hash_string(std::string_view value) noexcept

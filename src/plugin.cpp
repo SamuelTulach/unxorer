@@ -1,4 +1,4 @@
-﻿#include "global.hpp"
+#include "global.hpp"
 
 enum class emulation_scope
 {
@@ -15,6 +15,18 @@ struct emulation_config
     uval_t max_instructions;
     uval_t max_loop_iterations;
 };
+
+static bool initialize_emulator(emulator& emu, bool update_dialog)
+{
+    if (!emu.is_ready())
+    {
+        warning("Failed to initialize emulator");
+        return false;
+    }
+
+    emu.should_update_dialog = update_dialog;
+    return true;
+}
 
 static std::optional<emulation_config> get_user_config()
 {
@@ -41,49 +53,82 @@ static std::optional<emulation_config> get_user_config()
     return emulation_config{static_cast<emulation_scope>(scope_val), max_time, max_instr, max_loops};
 }
 
-static void run_on_function(ea_t start, uval_t max_time, uval_t max_instr, uval_t max_loops)
+static std::optional<ea_t> resolve_single_start(emulation_scope scope)
 {
-    emulator emu;
-    if (!emu.is_ready())
+    switch (scope)
     {
-        warning("Failed to initialize emulator");
-        return;
+    case emulation_scope::current_function:
+        if (const func_t* func = get_func(get_screen_ea()); func != nullptr)
+            return func->start_ea;
+
+        warning("No function under cursor");
+        return std::nullopt;
+
+    case emulation_scope::current_cursor:
+        return get_screen_ea();
+
+    case emulation_scope::entry_point:
+        return inf_get_start_ea();
+
+    case emulation_scope::every_function:
+        break;
     }
 
-    emu.run(start, max_time, max_instr, max_loops);
+    return std::nullopt;
+}
+
+static void run_on_function(ea_t start, const emulation_config& config)
+{
+    emulator emu;
+    if (!initialize_emulator(emu, true))
+        return;
+
+    emu.run(start, config.max_time_ms, config.max_instructions, config.max_loop_iterations);
     results::display(emu.get_string_list());
 }
 
-static void run_on_all_functions(uval_t max_time, uval_t max_instr, uval_t max_loops)
+static std::vector<ea_t> collect_function_starts()
 {
+    std::vector<ea_t> starts;
     const size_t total = get_func_qty();
-    if (total == 0)
+    starts.reserve(total);
+
+    for (size_t i = 0; i < total; ++i)
+    {
+        if (const func_t* func = getn_func(i); func != nullptr)
+            starts.push_back(func->start_ea);
+    }
+
+    return starts;
+}
+
+static void run_on_all_functions(const emulation_config& config)
+{
+    const std::vector<ea_t> starts = collect_function_starts();
+    if (starts.empty())
     {
         warning("No functions in the database");
         return;
     }
 
+    emulator emu;
+    if (!initialize_emulator(emu, false))
+        return;
+
+    const size_t total = starts.size();
     logger::info("running on {0} functions in database", total);
 
     std::unordered_set<found_string_t, found_string_hash> aggregated;
+    aggregated.reserve(total);
 
-    for (size_t i = 0; i < total; i++)
+    for (size_t i = 0; i < total; ++i)
     {
-        emulator emu;
-        if (!emu.is_ready())
-        {
-            warning("Failed to initialize emulator");
-            break;
-        }
-
-        emu.should_update_dialog = false;
-        const ea_t start = getn_func(i)->start_ea;
+        const ea_t start = starts[i];
         replace_wait_box("Emulating function %zu/%zu at 0x%llx", i + 1, total, start);
+        emu.run(start, config.max_time_ms, config.max_instructions, config.max_loop_iterations);
 
-        emu.run(start, max_time, max_instr, max_loops);
-
-        const auto& strings = emu.get_string_list();
-        aggregated.insert(strings.begin(), strings.end());
+        const auto& found = emu.get_string_list();
+        aggregated.insert(found.begin(), found.end());
 
         if (user_cancelled())
             break;
@@ -101,11 +146,6 @@ static plugmod_t* idaapi init()
     return PLUGIN_OK;
 }
 
-static void idaapi term()
-{
-    /**/
-}
-
 static bool idaapi run(size_t)
 {
     if (PH.id != PLFM_386 || !inf_is_64bit())
@@ -121,30 +161,17 @@ static bool idaapi run(size_t)
     counters::reset();
     show_wait_box("Initializing");
 
-    switch (config->scope)
+    if (config->scope == emulation_scope::every_function)
     {
-    case emulation_scope::current_function:
-        if (const func_t* func = get_func(get_screen_ea()); func)
-            run_on_function(func->start_ea, config->max_time_ms, config->max_instructions, config->max_loop_iterations);
-        else
-            warning("No function under cursor");
-        break;
-
-    case emulation_scope::every_function:
-        run_on_all_functions(config->max_time_ms, config->max_instructions, config->max_loop_iterations);
-        break;
-
-    case emulation_scope::current_cursor:
-        run_on_function(get_screen_ea(), config->max_time_ms, config->max_instructions, config->max_loop_iterations);
-        break;
-
-    case emulation_scope::entry_point:
-        run_on_function(inf_get_start_ea(), config->max_time_ms, config->max_instructions, config->max_loop_iterations);
-        break;
+        run_on_all_functions(*config);
+    }
+    else if (const auto start = resolve_single_start(config->scope); start.has_value())
+    {
+        run_on_function(*start, *config);
     }
 
     hide_wait_box();
     return true;
 }
 
-plugin_t PLUGIN = {IDP_INTERFACE_VERSION, 0, init, term, run, "", "", "unxorer", ""};
+plugin_t PLUGIN = {IDP_INTERFACE_VERSION, 0, init, nullptr, run, "", "", "unxorer", ""};

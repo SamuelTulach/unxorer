@@ -14,10 +14,14 @@
 #include <iomanip>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <sstream>
 #include <limits>
+#include <iostream>
+#include <cstdio>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -42,14 +46,9 @@
 #include "logger.hpp"
 #include "string_result.hpp"
 #include "instruction_classifier.hpp"
-#include "branch_manager.hpp"
 #include "register_mapper.hpp"
 #include "vector_operations.hpp"
 #include "emulator.hpp"
 #include "strings.hpp"
 #include "results.hpp"
 #include "handler.hpp"
-
-#if defined(_WIN32)
-#include "seh_support.hpp"
-#endif
