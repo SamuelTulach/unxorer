@@ -13,6 +13,10 @@ namespace
     constexpr uint64_t flag_sf = 0x00000080ull;
     constexpr uint64_t flag_of = 0x00000800ull;
 
+    constexpr uint64_t transient_map_size = 0x1000ull;
+    constexpr uint64_t transient_map_mask = ~(transient_map_size - 1ull);
+    constexpr size_t max_transient_regions = 2048;
+
     bool is_inside_image(uint64_t address, ea_t image_min, ea_t image_max)
     {
         return address >= image_min && address < image_max;
@@ -467,25 +471,83 @@ void emulator::hook_code(uc_engine* uc, const uint64_t address, const uint32_t s
         current->force_branch(uc, insn);
 }
 
-bool emulator::hook_mem(uc_engine* uc, uc_mem_type, const uint64_t address, int, int64_t, void* user_data)
+bool emulator::hook_mem(uc_engine* uc, uc_mem_type, const uint64_t address, int size, int64_t, void* user_data)
 {
+    (void)uc;
+
     emulator* current = reinterpret_cast<emulator*>(user_data);
 
-    uint64_t rip = 0;
-    uc_reg_read(uc, UC_X86_REG_RIP, &rip);
+    const size_t access_size = size > 0 ? static_cast<size_t>(size) : 1;
+    return current->map_fault_region(address, access_size);
+}
 
-    size_t advance = 1;
-    insn_t insn;
-    if (current->try_get_insn(rip, insn) && insn.size > 0)
-        advance = insn.size;
+bool emulator::map_fault_region(const uint64_t fault_address, const size_t access_size)
+{
+    const uint64_t start = fault_address & transient_map_mask;
+    const uint64_t last = fault_address + static_cast<uint64_t>(access_size - 1);
+    const uint64_t end = (last + transient_map_size) & transient_map_mask;
 
-    const uint64_t next = rip + advance;
-    uc_reg_write(uc, UC_X86_REG_RIP, &next);
+    for (uint64_t page = start; page < end; page += transient_map_size)
+    {
+        if (is_core_mapped_address(page) || is_transient_mapped_address(page))
+            continue;
 
-    if (current->allow_ui_calls)
-        logger::debug("skipped instruction {0:x} due to unmapped access at {1:x}", rip, address);
+        uint8_t probe = 0;
+        if (uc_mem_read(engine, page, &probe, sizeof(probe)) == UC_ERR_OK)
+            continue;
+
+        if (!map_transient_page(page))
+            return false;
+    }
 
     return true;
+}
+
+bool emulator::is_core_mapped_address(const uint64_t address) const
+{
+    const uint64_t image_end = image_map_start_ + static_cast<uint64_t>(image_map_size_);
+    if (address >= image_map_start_ && address < image_end)
+        return true;
+
+    const uint64_t stack_start = stack_base - stack_size;
+    return address >= stack_start && address < stack_base;
+}
+
+bool emulator::is_transient_mapped_address(const uint64_t address) const
+{
+    return std::find(transient_mappings_.begin(), transient_mappings_.end(), address) != transient_mappings_.end();
+}
+
+bool emulator::map_transient_page(const uint64_t page_base)
+{
+    if (transient_mappings_.size() >= max_transient_regions)
+    {
+        transient_limit_reached_ = true;
+        ++transient_limit_hits_;
+        return false;
+    }
+
+    const uc_err err = uc_mem_map(engine, page_base, transient_map_size, UC_PROT_ALL);
+    if (err == UC_ERR_MAP)
+        return true;
+
+    if (err != UC_ERR_OK)
+    {
+        if (allow_ui_calls)
+            logger::debug("failed to map transient page at {0:x}: {1}", page_base, uc_strerror(err));
+        return false;
+    }
+
+    transient_mappings_.push_back(page_base);
+    return true;
+}
+
+void emulator::clear_transient_mappings()
+{
+    for (const uint64_t base : transient_mappings_)
+        uc_mem_unmap(engine, base, transient_map_size);
+
+    transient_mappings_.clear();
 }
 
 bool emulator::try_get_insn(const uint64_t address, insn_t& insn) const
@@ -618,6 +680,10 @@ void emulator::run(ea_t start, const uint64_t max_time_ms, const uint64_t max_in
     loop_iterations_.clear();
     loop_iteration_limit = max_loop_iterations;
     next_waitbox_update = std::chrono::high_resolution_clock::now();
+    transient_limit_reached_ = false;
+    transient_limit_hits_ = 0;
+
+    clear_transient_mappings();
 
     std::copy(image_backup_.begin(), image_backup_.end(), image_buffer_.begin());
     std::fill(stack_buffer_.begin(), stack_buffer_.end(), 0);

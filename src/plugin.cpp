@@ -113,13 +113,15 @@ static void run_on_all_functions(const emulation_config& config, const emulator:
     }
 
     const size_t total = starts.size();
-    const size_t thread_count = resolve_thread_count(total);
-    logger::info("running on {0} functions in database using {1} threads", total, thread_count);
+    logger::info("running on {0} functions in database", total);
 
     std::atomic<size_t> next_index = 0;
     std::atomic<size_t> completed = 0;
     std::atomic_bool stop_requested = false;
+    std::atomic<size_t> limit_hit_functions = 0;
+    std::atomic<size_t> limit_hit_total = 0;
 
+    const size_t thread_count = resolve_thread_count(total);
     std::vector<std::unordered_set<found_string_t, found_string_hash>> partial_results(thread_count);
     std::vector<std::thread> workers;
     workers.reserve(thread_count);
@@ -150,6 +152,12 @@ static void run_on_all_functions(const emulation_config& config, const emulator:
 
                 emu.run(starts[index], config.max_time_ms, config.max_instructions, config.max_loop_iterations,
                         &stop_requested);
+
+                if (emu.transient_limit_reached())
+                {
+                    limit_hit_functions.fetch_add(1, std::memory_order_relaxed);
+                    limit_hit_total.fetch_add(emu.transient_limit_hits(), std::memory_order_relaxed);
+                }
 
                 const auto& found = emu.get_string_list();
                 local.insert(found.begin(), found.end());
@@ -182,6 +190,14 @@ static void run_on_all_functions(const emulation_config& config, const emulator:
     aggregated.reserve(total);
     for (auto& partial : partial_results)
         aggregated.insert(partial.begin(), partial.end());
+
+    const size_t hit_functions = limit_hit_functions.load(std::memory_order_relaxed);
+    if (hit_functions > 0)
+    {
+        const size_t hit_total = limit_hit_total.load(std::memory_order_relaxed);
+        logger::info("warning: transient mapping limit reached in {0} function runs ({1} total hits)", hit_functions,
+                     hit_total);
+    }
 
     replace_wait_box("Emulation finished using %zu threads", thread_count);
 

@@ -163,6 +163,9 @@ class emulator
     std::vector<uint8_t> stack_buffer_;
     std::vector<uint8_t> image_buffer_;
     std::vector<uint8_t> image_backup_;
+    std::vector<uint64_t> transient_mappings_;
+    bool transient_limit_reached_ = false;
+    size_t transient_limit_hits_ = 0;
     const instruction_snapshot_t& instruction_snapshot_;
     const std::atomic_bool* stop_requested_ = nullptr;
 
@@ -176,6 +179,11 @@ class emulator
     bool schedule_branch(uc_engine* uc, uint64_t from, uint64_t target);
     void discover_indirect_targets(uc_engine* uc, uint64_t address, const insn_t& insn);
     [[nodiscard]] bool try_get_insn(uint64_t address, insn_t& insn) const;
+    [[nodiscard]] bool map_fault_region(uint64_t fault_address, size_t access_size);
+    [[nodiscard]] bool is_core_mapped_address(uint64_t address) const;
+    [[nodiscard]] bool is_transient_mapped_address(uint64_t address) const;
+    [[nodiscard]] bool map_transient_page(uint64_t page_base);
+    void clear_transient_mappings();
 
     static void hook_code(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
     static bool hook_mem(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);
@@ -194,6 +202,14 @@ class emulator
     }
     void run(ea_t start, uint64_t max_time_ms, uint64_t max_instr, uint64_t max_loop_iterations,
              const std::atomic_bool* stop_requested = nullptr);
+    [[nodiscard]] bool transient_limit_reached() const noexcept
+    {
+        return transient_limit_reached_;
+    }
+    [[nodiscard]] size_t transient_limit_hits() const noexcept
+    {
+        return transient_limit_hits_;
+    }
 
     static std::optional<image_snapshot_t> capture_image_snapshot();
     static std::optional<instruction_snapshot_t> capture_instruction_snapshot(ea_t image_min, ea_t image_max);
